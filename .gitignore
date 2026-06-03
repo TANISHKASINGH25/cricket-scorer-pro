@@ -1,0 +1,21 @@
+# Virtual environments
+venv/
+venv_vertex/
+
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local tools
+cloud-sql-proxy.exe.exe
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
