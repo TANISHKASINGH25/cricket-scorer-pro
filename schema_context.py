@@ -744,6 +744,25 @@ NV_PLAY_DICTIONARY = {
         "category": "ball",
         "aggregation": "groupable",
         "synonyms": ["ball color"]
+    },
+        "match_type": {
+        "description": "Type or format of the cricket match",
+        "datatype": "VARCHAR",
+        "category": "match_info",
+        "aggregation": "groupable",
+        "synonyms": [
+            "match type",
+            "format",
+            "match format",
+            "game format",
+            "timed",
+            "timed match",
+            "50 over",
+            "50-over",
+            "limited overs",
+            "odi",
+            "test",
+            "t20"
+        ]
     }
-
 }

@@ -4,6 +4,7 @@ venv_vertex/
 
 # Environment variables
 .env
+cloudrun.env
 
 # Python cache
 __pycache__/
