@@ -54,7 +54,7 @@ app.add_middleware(
 # =========================================================
 # DATABASE CONNECTION
 # =========================================================
-'''
+"""
 def get_db_connection():
     return psycopg2.connect(
         host="/cloudsql/sportsanalytics-495612:europe-west2:sportsdb",
@@ -63,14 +63,13 @@ def get_db_connection():
         password=os.getenv("DB_PASSWORD"),
         connect_timeout=10
     )
-'''
+"""
+
 
 def get_db_connection():
-    print("Connecting to Cloud SQL...")
-
     return psycopg2.connect(
         host="/cloudsql/sportsanalytics-495612:europe-west2:sportsdb",
-        dbname=os.getenv("DB_NAME"),
+        database=os.getenv("DB_NAME"),
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         connect_timeout=10
