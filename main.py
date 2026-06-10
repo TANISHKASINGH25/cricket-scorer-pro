@@ -68,13 +68,13 @@ def get_db_connection():
 
 def get_db_connection():
     return psycopg2.connect(
-        host="/cloudsql/sportsanalytics-495612:europe-west2:sportsdb",
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
         database=os.getenv("DB_NAME"),
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         connect_timeout=10
     )
-
 # =========================================================
 # REQUEST MODEL
 # =========================================================
