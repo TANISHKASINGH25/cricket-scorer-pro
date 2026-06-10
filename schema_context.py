@@ -1,751 +1,799 @@
-"""
 NV_PLAY_DATA_DICTIONARY = {
-
     # =========================================================
     # MATCH INFORMATION
     # =========================================================
-
     "Competition": {
         "description": "Tournament or competition name",
         "datatype": "text",
         "category": "match_info",
         "aggregation": None,
-        "synonyms": [
-            "tournament",
-            "series",
-            "league",
-            "competition"
-        ]
+        "synonyms": ["tournament", "series", "league", "competition"],
     },
-
     "Match": {
         "description": "Match identifier or match name",
         "datatype": "text",
         "category": "match_info",
         "aggregation": None,
-        "synonyms": [
-            "game",
-            "fixture",
-            "match"
-        ]
+        "synonyms": ["game", "fixture", "match"],
     },
-
     "Date": {
         "description": "Match date",
         "datatype": "date",
         "category": "match_info",
         "aggregation": None,
-        "synonyms": [
-            "match date",
-            "game date"
-        ]
+        "synonyms": ["match date", "game date"],
     },
-
     "Start Time": {
         "description": "Scheduled start time of match",
-        "datatype": "timestamp",
+        "datatype": "time",
         "category": "match_info",
         "aggregation": None,
-        "synonyms": [
-            "start",
-            "match start",
-            "time"
-        ]
+        "synonyms": ["start", "match start", "time"],
     },
-
     # =========================================================
     # BALL / OVER INFORMATION
     # =========================================================
-
     "Innings": {
         "description": "Current innings number",
         "datatype": "integer",
         "category": "innings",
         "aggregation": None,
-        "synonyms": [
-            "innings",
-            "inning"
-        ]
+        "synonyms": ["innings", "inning"],
     },
-
     "Over": {
         "description": "Over number in innings",
         "datatype": "integer",
         "category": "ball_tracking",
         "aggregation": None,
-        "synonyms": [
-            "over",
-            "overs"
-        ]
+        "synonyms": ["over", "overs"],
     },
-
     "Ball": {
         "description": "Ball number within over",
         "datatype": "integer",
         "category": "ball_tracking",
         "aggregation": None,
-        "synonyms": [
-            "delivery",
-            "ball"
-        ]
+        "synonyms": ["delivery", "ball"],
     },
-
     "Runs": {
         "description": "Runs scored from bat",
         "datatype": "integer",
         "category": "batting",
         "aggregation": "SUM",
-        "synonyms": [
-            "score",
-            "batting runs",
-            "runs scored",
-            "scoring"
-        ]
+        "synonyms": ["score", "batting runs", "runs scored", "scoring"],
     },
-
     "Extra Runs": {
-        "description": "Extra runs awarded on delivery",
+        "description": "Runs awarded without being scored directly from the bat, including wides, no-balls, byes, leg-byes, overthrows and penalty runs.",
         "datatype": "integer",
         "category": "extras",
         "aggregation": "SUM",
         "synonyms": [
             "extras",
+            "extra runs",
             "wides",
-            "no balls",
-            "extra runs"
-        ]
+            "wide ball",
+            "no ball",
+            "no-ball",
+            "bye",
+            "byes",
+            "leg bye",
+            "leg byes",
+            "overthrow",
+            "overthrows",
+            "penalty run",
+            "penalty runs",
+            "additional runs",
+            "sundries",
+        ],
     },
-
     "Batter": {
-        "description": "Name of striker batter",
+        "description": "Name of the striker facing the delivery. Used for batting performance, scoring patterns and shot analysis.",
         "datatype": "text",
         "category": "batting",
         "aggregation": None,
         "synonyms": [
             "batsman",
             "batter",
-            "striker"
-        ]
+            "striker",
+            "bat",
+            "batting player",
+            "player batting",
+        ],
     },
-
     "Bowler": {
         "description": "Name of current bowler",
         "datatype": "text",
         "category": "bowling",
         "aggregation": None,
-        "synonyms": [
-            "bowler",
-            "pitcher"
-        ]
+        "synonyms": ["bowler", "pitcher"],
     },
-
     "Wicket": {
-        "description": "Whether wicket fell on delivery",
-        "datatype": "boolean",
+        "description": "Represents whether a dismissal occurred and the type of wicket taken on the delivery.",
+        "datatype": "text",
         "category": "dismissal",
         "aggregation": "COUNT",
         "synonyms": [
             "dismissal",
             "out",
-            "wicket"
-        ]
+            "wicket",
+            "bowled",
+            "caught",
+            "caught behind",
+            "lbw",
+            "run out",
+            "stumped",
+            "hit wicket",
+            "timed out",
+            "retired out",
+            "obstructing the field",
+            "caught and bowled",
+        ],
     },
-
     "Power Play": {
-        "description": "Whether delivery occurred during powerplay",
-        "datatype": "boolean",
+        "description": "Whether delivery occurred during powerplay where fielding restrictions apply and scoring rates are generally higher.",
+        "datatype": "numeric",
         "category": "match_phase",
         "aggregation": None,
         "synonyms": [
             "powerplay",
-            "field restriction"
-        ]
+            "power play",
+            "field restriction",
+            "scoring phase",
+            "powerplay scoring",
+            "powerplay run rate",
+            "scoring rate",
+        ],
     },
-
     "Run Rate After": {
         "description": "Run rate after delivery",
-        "datatype": "float",
+        "datatype": "numeric",
         "category": "match_state",
         "aggregation": "AVG",
-        "synonyms": [
-            "run rate",
-            "rr"
-        ]
+        "synonyms": ["run rate", "rr"],
     },
-
     "Req Run Rate After": {
-        "description": "Required run rate after delivery",
-        "datatype": "float",
+        "description": "Required run rate after delivery.",
+        "datatype": "numeric",
         "category": "match_state",
         "aggregation": "AVG",
         "synonyms": [
             "required run rate",
-            "rrr"
-        ]
+            "rrr",
+            "required rate",
+            "needed run rate",
+            "chase rate",
+            "target rate",
+        ],
     },
-
     "Shot": {
-        "description": "Shot played by batter",
+        "description": "Batting stroke selected by the batter. Useful for analyzing scoring zones and shot effectiveness.",
         "datatype": "text",
         "category": "batting",
         "aggregation": None,
         "synonyms": [
             "stroke",
             "shot",
-            "batting shot"
-        ]
+            "batting shot",
+            "played",
+            "shot played",
+            "cover drive",
+            "straight drive",
+            "square drive",
+            "off drive",
+            "on drive",
+            "cut",
+            "square cut",
+            "late cut",
+            "pull",
+            "hook",
+            "sweep",
+            "reverse sweep",
+            "paddle sweep",
+            "upper cut",
+            "glance",
+            "flick",
+            "lofted shot",
+            "inside out",
+            "switch hit",
+            "ramp shot",
+            "scoop",
+            "helicopter shot",
+            "defensive shot",
+        ],
     },
-
     "Line": {
         "description": "Line of delivery",
         "datatype": "text",
         "category": "bowling",
         "aggregation": None,
-        "synonyms": [
-            "bowling line",
-            "line"
-        ]
+        "synonyms": ["bowling line", "line"],
     },
-
     "Length": {
-        "description": "Length of delivery",
+        "description": "Length category of the delivery used to analyze bowling strategy and batter response.",
         "datatype": "text",
         "category": "bowling",
         "aggregation": None,
         "synonyms": [
             "bowling length",
+            "length",
             "yorker",
+            "full yorker",
+            "blockhole",
+            "full toss",
+            "full delivery",
+            "pitched up",
+            "half volley",
+            "good length",
+            "back of length",
+            "short of length",
             "short ball",
-            "good length"
-        ]
+            "bouncer",
+            "half tracker",
+            "long hop",
+            "dragged short",
+        ],
     },
-
     "SwingAngle": {
         "description": "Swing angle of ball",
-        "datatype": "float",
+        "datatype": "numeric",
         "category": "ball_physics",
         "aggregation": "AVG",
-        "synonyms": [
-            "swing",
-            "movement",
-            "late swing"
-        ]
+        "synonyms": ["swing", "movement", "late swing"],
     },
-
     "Speed": {
         "description": "Ball release speed",
-        "datatype": "float",
+        "datatype": "numeric",
         "category": "ball_physics",
         "aggregation": "AVG",
-        "synonyms": [
-            "pace",
-            "ball speed",
-            "bowling speed"
-        ]
-    }
-
+        "synonyms": ["pace", "ball speed", "bowling speed"],
+    },
 }
 
-"""
-
 NV_PLAY_DICTIONARY = {
-
     # =====================================================
     # MATCH INFORMATION
     # =====================================================
-
     "competition": {
         "description": "Tournament or competition name",
         "datatype": "TEXT",
         "category": "match_info",
         "aggregation": "groupable",
-        "synonyms": ["tournament", "league", "series"]
+        "synonyms": ["tournament", "league", "series"],
     },
-
     "match": {
         "description": "Match name or fixture",
         "datatype": "TEXT",
         "category": "match_info",
         "aggregation": "groupable",
-        "synonyms": ["fixture", "game"]
+        "synonyms": ["fixture", "game"],
     },
-
     "date": {
         "description": "Match date",
-        "datatype": "TEXT",
+        "datatype": "date",
         "category": "match_info",
         "aggregation": "groupable",
-        "synonyms": ["match date"]
+        "synonyms": ["match date"],
     },
-
     "venue": {
-        "description": "Cricket ground or stadium",
+        "description": "Cricket ground, stadium or club where the match is played.",
         "datatype": "TEXT",
         "category": "match_info",
         "aggregation": "groupable",
-        "synonyms": ["stadium", "ground"]
+        "synonyms": [
+            "stadium",
+            "ground",
+            "cricket club",
+            "club",
+            "cc",
+            "cricket ground",
+            "venue",
+        ],
     },
-
     "innings": {
         "description": "Innings number",
         "datatype": "INTEGER",
         "category": "match_info",
         "aggregation": "groupable",
-        "synonyms": ["inning"]
+        "synonyms": ["inning"],
     },
-
     "over": {
         "description": "Over number",
         "datatype": "INTEGER",
         "category": "match_info",
         "aggregation": "groupable",
-        "synonyms": ["overs"]
+        "synonyms": ["overs"],
     },
-
     "ball": {
         "description": "Ball number within over",
         "datatype": "INTEGER",
         "category": "match_info",
         "aggregation": "groupable",
-        "synonyms": ["delivery"]
+        "synonyms": ["delivery"],
     },
-
     "innings_ball": {
         "description": "Ball number in innings",
         "datatype": "INTEGER",
         "category": "match_info",
         "aggregation": "groupable",
-        "synonyms": ["delivery number"]
+        "synonyms": ["delivery number"],
     },
-
     # =====================================================
     # BATTING
     # =====================================================
-
     "batter": {
-        "description": "Name of batter",
+        "description": "Name of the batter facing the delivery. Used in batting performance and matchup analysis.",
         "datatype": "TEXT",
         "category": "batting",
         "aggregation": "groupable",
-        "synonyms": ["batsman", "striker"]
+        "synonyms": ["batsman", "striker", "batter", "bat", "batting player"],
     },
-
     "batter_id": {
         "description": "Unique batter identifier",
         "datatype": "TEXT",
         "category": "batting",
         "aggregation": "groupable",
-        "synonyms": ["player id"]
+        "synonyms": ["player id"],
     },
-
     "non_striker": {
         "description": "Non striker batter",
         "datatype": "TEXT",
         "category": "batting",
         "aggregation": "groupable",
-        "synonyms": ["runner"]
+        "synonyms": ["runner"],
     },
-
     "batting_position": {
         "description": "Batting order position",
         "datatype": "INTEGER",
         "category": "batting",
         "aggregation": "averageable",
-        "synonyms": ["batting order"]
+        "synonyms": ["batting order"],
     },
-
     "batting_hand": {
-        "description": "Batting handedness",
+        "description": "Batting handedness of the batter.",
         "datatype": "TEXT",
         "category": "batting",
         "aggregation": "groupable",
-        "synonyms": ["right hand", "left hand"]
+        "synonyms": [
+            "right hand",
+            "left hand",
+            "right handed",
+            "left handed",
+            "righty",
+            "lefty",
+        ],
     },
-
     "runs": {
         "description": "Runs scored by batter",
         "datatype": "INTEGER",
         "category": "batting",
         "aggregation": "summable",
-        "synonyms": ["score", "batting runs"]
+        "synonyms": ["score", "batting runs"],
     },
-
     "cumulative_batter_runs": {
-        "description": "Running total batter runs",
+        "description": "Running total runs scored by the batter across an innings, competition or season.",
         "datatype": "INTEGER",
         "category": "batting",
         "aggregation": "max",
-        "synonyms": ["career runs", "innings runs"]
+        "synonyms": [
+            "career runs",
+            "innings runs",
+            "tournament runs",
+            "season runs",
+            "competition runs",
+            "aggregate runs",
+        ],
     },
-
     "cumulative_batter_balls": {
         "description": "Running total balls faced",
         "datatype": "INTEGER",
         "category": "batting",
         "aggregation": "max",
-        "synonyms": ["balls faced"]
+        "synonyms": ["balls faced"],
     },
-
     "shot": {
-        "description": "Type of batting shot",
-        "datatype": "NUMERIC",
+        "description": "Batting stroke selected by the batter. Useful for analyzing scoring zones and shot effectiveness.",
+        "datatype": "text",
         "category": "batting",
         "aggregation": "groupable",
-        "synonyms": ["stroke", "batting shot"]
+        "synonyms": [
+            "stroke",
+            "shot",
+            "batting shot",
+            "played",
+            "shot played",
+            "cover drive",
+            "straight drive",
+            "square drive",
+            "off drive",
+            "on drive",
+            "cut",
+            "square cut",
+            "late cut",
+            "pull",
+            "hook",
+            "sweep",
+            "reverse sweep",
+            "paddle sweep",
+            "upper cut",
+            "glance",
+            "flick",
+            "lofted shot",
+            "inside out",
+            "switch hit",
+            "ramp shot",
+            "scoop",
+            "helicopter shot",
+            "defensive shot",
+        ],
     },
-
     "connection": {
-        "description": "Quality of bat-ball connection",
-        "datatype": "NUMERIC",
+        "description": "Quality and area of bat-ball contact.",
+        "datatype": "varchar",
         "category": "batting",
         "aggregation": "averageable",
-        "synonyms": ["timing", "middle"]
+        "synonyms": [
+            "timing",
+            "middle",
+            "sweet spot",
+            "middled",
+            "edge",
+            "inside edge",
+            "outside edge",
+            "top edge",
+            "bottom edge",
+            "leading edge",
+            "thick edge",
+            "thin edge",
+            "shoulder",
+            "splice",
+            "handle",
+            "glove",
+            "gloves",
+            "toe end",
+            "bat contact",
+        ],
     },
-
     # =====================================================
     # BOWLING
     # =====================================================
-
     "bowler": {
         "description": "Name of bowler",
         "datatype": "TEXT",
         "category": "bowling",
         "aggregation": "groupable",
-        "synonyms": ["bowler name"]
+        "synonyms": ["bowler name"],
     },
-
     "bowler_id": {
         "description": "Unique bowler identifier",
-        "datatype": "TEXT",
+        "datatype": "varchar",
         "category": "bowling",
         "aggregation": "groupable",
-        "synonyms": ["bowler code"]
+        "synonyms": ["bowler code"],
     },
-
     "bowler_type": {
-        "description": "Bowling style/type",
+        "description": "Bowling style or classification of the bowler.",
         "datatype": "TEXT",
         "category": "bowling",
         "aggregation": "groupable",
-        "synonyms": ["pace", "spin"]
+        "synonyms": [
+            "pace",
+            "spin",
+            "fast",
+            "fast bowler",
+            "medium fast",
+            "medium pace",
+            "seamer",
+            "swing bowler",
+            "left arm pace",
+            "right arm pace",
+            "off spin",
+            "off spinner",
+            "leg spin",
+            "leg spinner",
+            "left arm orthodox",
+            "chinaman",
+            "finger spin",
+            "wrist spin",
+        ],
     },
-
     "delivery": {
         "description": "Type of delivery",
         "datatype": "NUMERIC",
         "category": "bowling",
         "aggregation": "groupable",
-        "synonyms": ["ball type"]
+        "synonyms": ["ball type"],
     },
-
     "speed": {
         "description": "Ball release speed",
         "datatype": "NUMERIC",
         "category": "bowling",
         "aggregation": "averageable",
-        "synonyms": ["pace", "velocity"]
+        "synonyms": [
+            "pace",
+            "velocity",
+            "speed",
+            "fast",
+            "bowling speed",
+            "ball speed",
+        ],
     },
-
     "bouncespeed": {
         "description": "Ball speed after bounce",
         "datatype": "NUMERIC",
         "category": "bowling",
         "aggregation": "averageable",
-        "synonyms": ["bounce speed"]
+        "synonyms": ["bounce speed"],
     },
-
     "swingangle": {
         "description": "Amount of swing movement",
         "datatype": "NUMERIC",
         "category": "bowling",
         "aggregation": "averageable",
-        "synonyms": ["swing"]
+        "synonyms": ["swing"],
     },
-
     "deviation": {
         "description": "Deviation after pitching",
         "datatype": "NUMERIC",
         "category": "bowling",
         "aggregation": "averageable",
-        "synonyms": ["movement"]
+        "synonyms": ["movement"],
     },
-
     "releaseX": {
         "description": "Bowler release X coordinate",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["release position"]
+        "synonyms": ["release position"],
     },
-
     "releaseY": {
         "description": "Bowler release Y coordinate",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["release point"]
+        "synonyms": ["release point"],
     },
-
     "releaseZ": {
         "description": "Bowler release height",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["release height"]
+        "synonyms": ["release height"],
     },
-
     # =====================================================
     # DISMISSALS
     # =====================================================
-
     "wicket": {
-    "description": "Type of dismissal. NULL means no wicket.",
-    "datatype": "TEXT",
-    "category": "dismissal",
-    "aggregation": "count",
-    "synonyms": [
-        "dismissal",
-        "out",
-        "wicket type"
-    ]
+        "description": "Type of dismissal. NULL means no wicket.",
+        "datatype": "TEXT",
+        "category": "dismissal",
+        "aggregation": "count",
+        "synonyms": [
+            "dismissal",
+            "out",
+            "wicket type",
+            "bowled",
+            "caught",
+            "lbw",
+            "run out",
+            "stumped",
+            "hit wicket",
+            "timed out",
+            "caught and bowled",
+            "retired out",
+        ],
     },
-
     "dismissed_batter": {
         "description": "Dismissed batter name",
         "datatype": "TEXT",
         "category": "dismissal",
         "aggregation": "groupable",
-        "synonyms": ["out batter"]
+        "synonyms": ["out batter"],
     },
-
     "appeal_type": {
-        "description": "Type of appeal",
+        "description": "Type of appeal made by the fielding side.",
         "datatype": "TEXT",
         "category": "dismissal",
         "aggregation": "groupable",
-        "synonyms": ["appeal"]
+        "synonyms": [
+            "appeal",
+            "lbw appeal",
+            "caught appeal",
+            "run out appeal",
+            "stumping appeal",
+            "wicket appeal",
+            "umpire review",
+        ],
     },
-
     # =====================================================
     # TEAM STATS
     # =====================================================
-
     "batting_team": {
         "description": "Batting side",
         "datatype": "TEXT",
         "category": "team",
         "aggregation": "groupable",
-        "synonyms": ["team batting"]
+        "synonyms": ["team batting"],
     },
-
     "bowling_team": {
         "description": "Bowling side",
         "datatype": "TEXT",
         "category": "team",
         "aggregation": "groupable",
-        "synonyms": ["team bowling"]
+        "synonyms": ["team bowling"],
     },
-
     "team_runs": {
         "description": "Team total runs",
         "datatype": "INTEGER",
         "category": "team",
         "aggregation": "max",
-        "synonyms": ["score"]
+        "synonyms": ["score"],
     },
-
     "team_wickets": {
         "description": "Team wickets fallen",
         "datatype": "INTEGER",
         "category": "team",
         "aggregation": "max",
-        "synonyms": ["wickets"]
+        "synonyms": ["wickets"],
     },
-
     "run_rate_at_start": {
         "description": "Run rate before ball",
         "datatype": "NUMERIC",
         "category": "team",
         "aggregation": "averageable",
-        "synonyms": ["current run rate"]
+        "synonyms": ["current run rate"],
     },
-
     "run_rate_after": {
         "description": "Run rate after ball",
         "datatype": "NUMERIC",
         "category": "team",
         "aggregation": "averageable",
-        "synonyms": ["updated run rate"]
+        "synonyms": ["updated run rate"],
     },
-
     "req_run_rate_at_start": {
         "description": "Required run rate before delivery",
         "datatype": "NUMERIC",
         "category": "team",
         "aggregation": "averageable",
-        "synonyms": ["required rate"]
+        "synonyms": ["required rate"],
     },
-
     "req_run_rate_after": {
         "description": "Required run rate after delivery",
         "datatype": "NUMERIC",
         "category": "team",
         "aggregation": "averageable",
-        "synonyms": ["required run rate"]
+        "synonyms": ["required run rate"],
     },
-
     # =====================================================
     # FIELDING
     # =====================================================
-
     "fielder1": {
         "description": "Primary fielder involved",
-        "datatype": "TEXT",
+        "datatype": "varchar",
         "category": "fielding",
         "aggregation": "groupable",
-        "synonyms": ["fielder"]
+        "synonyms": ["fielder"],
     },
-
     "fielder1_position": {
         "description": "Primary fielder position",
-        "datatype": "TEXT",
+        "datatype": " varchar ",
         "category": "fielding",
         "aggregation": "groupable",
-        "synonyms": ["field position"]
+        "synonyms": ["field position"],
     },
-
     "keeper_up": {
         "description": "Whether wicketkeeper stood up",
         "datatype": "BOOLEAN",
         "category": "fielding",
         "aggregation": "countable",
-        "synonyms": ["keeper standing up"]
+        "synonyms": ["keeper standing up"],
     },
-
     "around_the_wicket": {
         "description": "Bowler around the wicket",
         "datatype": "BOOLEAN",
         "category": "bowling",
         "aggregation": "countable",
-        "synonyms": ["around wicket"]
+        "synonyms": ["around wicket"],
     },
-
     # =====================================================
     # BALL TRACKING
     # =====================================================
-
     "pitchX": {
         "description": "Pitch impact X coordinate",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["pitch line"]
+        "synonyms": ["pitch line"],
     },
-
     "pitchY": {
         "description": "Pitch impact Y coordinate",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["pitch length"]
+        "synonyms": ["pitch length"],
     },
-
     "impactX": {
         "description": "Bat impact X coordinate",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["bat impact"]
+        "synonyms": ["bat impact"],
     },
-
     "impactY": {
         "description": "Bat impact Y coordinate",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["impact position"]
+        "synonyms": ["impact position"],
     },
-
     "landingX": {
         "description": "Ball landing X coordinate",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["landing line"]
+        "synonyms": ["landing line"],
     },
-
     "landingY": {
         "description": "Ball landing Y coordinate",
         "datatype": "NUMERIC",
         "category": "tracking",
         "aggregation": "averageable",
-        "synonyms": ["landing length"]
+        "synonyms": ["landing length"],
     },
-
     # =====================================================
     # MATCH RESULT
     # =====================================================
-
     "result": {
         "description": "Match result",
         "datatype": "TEXT",
         "category": "result",
         "aggregation": "groupable",
-        "synonyms": ["outcome"]
+        "synonyms": ["outcome"],
     },
-
     "winning_team": {
         "description": "Winning team",
         "datatype": "TEXT",
         "category": "result",
         "aggregation": "groupable",
-        "synonyms": ["winner"]
+        "synonyms": ["winner"],
     },
-
     "losing_team": {
         "description": "Losing team",
         "datatype": "TEXT",
         "category": "result",
         "aggregation": "groupable",
-        "synonyms": ["loser"]
+        "synonyms": ["loser"],
     },
-
     # =====================================================
     # BALL DETAILS
     # =====================================================
-
     "legal_ball": {
         "description": "Whether delivery was legal",
         "datatype": "BOOLEAN",
         "category": "ball",
         "aggregation": "countable",
-        "synonyms": ["valid delivery"]
+        "synonyms": ["valid delivery"],
     },
-
     "free_hit": {
         "description": "Whether delivery was free hit",
         "datatype": "BOOLEAN",
         "category": "ball",
         "aggregation": "countable",
-        "synonyms": ["free delivery"]
+        "synonyms": ["free delivery"],
     },
-
     "ball_type": {
         "description": "Type of cricket ball",
         "datatype": "TEXT",
         "category": "ball",
         "aggregation": "groupable",
-        "synonyms": ["ball variation"]
+        "synonyms": ["ball variation"],
     },
-
     "ball_colour": {
         "description": "Color of cricket ball",
         "datatype": "TEXT",
         "category": "ball",
         "aggregation": "groupable",
-        "synonyms": ["ball color"]
+        "synonyms": ["ball color"],
     },
-        "match_type": {
+    "match_type": {
         "description": "Type or format of the cricket match",
         "datatype": "VARCHAR",
         "category": "match_info",
@@ -762,7 +810,7 @@ NV_PLAY_DICTIONARY = {
             "limited overs",
             "odi",
             "test",
-            "t20"
-        ]
-    }
+            "t20",
+        ],
+    },
 }

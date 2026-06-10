@@ -56,10 +56,8 @@ app.add_middleware(
 # =========================================================
 
 def get_db_connection():
-
     return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
+        host="/cloudsql/sportsanalytics-495612:europe-west2:sportsdb",
         database=os.getenv("DB_NAME"),
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
@@ -86,9 +84,7 @@ def llm(prompt: str) -> str:
 # =========================================================
 
 def build_schema_context(question=""):
-
     schema_lines = []
-
     for column, metadata in NV_PLAY_DICTIONARY.items():
         line = f"""
 Column: {column}
@@ -99,7 +95,6 @@ Aggregation: {metadata['aggregation']}
 Synonyms: {", ".join(metadata['synonyms'])}
 """
         schema_lines.append(line)
-
     return "\n".join(schema_lines)
 
 # =========================================================
@@ -107,9 +102,7 @@ Synonyms: {", ".join(metadata['synonyms'])}
 # =========================================================
 
 def build_metrics_context():
-
     metric_lines = []
-
     for metric, metadata in DERIVED_METRICS.items():
         line = f"""
 Metric: {metric}
@@ -119,7 +112,6 @@ Category: {metadata['category']}
 Synonyms: {", ".join(metadata['synonyms'])}
 """
         metric_lines.append(line)
-
     return "\n".join(metric_lines)
 
 # =========================================================
@@ -127,7 +119,6 @@ Synonyms: {", ".join(metadata['synonyms'])}
 # =========================================================
 
 def build_rules_context():
-
     rules = CRICKET_RULES
     lines = []
 
@@ -186,7 +177,6 @@ def build_rules_context():
 # =========================================================
 
 def build_insight_rules_context():
-
     rules = CRICKET_RULES
     lines = []
 
@@ -237,7 +227,6 @@ def build_insight_rules_context():
 # =========================================================
 
 def build_cricket_terms_context():
-
     lines = ["CRICKET TERMINOLOGY -> SQL TRANSLATION:"]
 
     lines.append("\nBATTING POSITIONS:")
@@ -264,6 +253,7 @@ def build_cricket_terms_context():
     lines.append("  duck                   -> runs_batter = 0 AND wicket IS NOT NULL")
     lines.append("  dismissed              -> wicket IS NOT NULL")
     lines.append("  not out                -> wicket IS NULL")
+    lines.append("  golden duck            -> runs_batter = 0 AND wicket IS NOT NULL AND ball_number = 1")
 
     lines.append("\nDELIVERY TYPES:")
     lines.append("  dot ball               -> runs_total = 0 AND legal_ball = TRUE")
@@ -273,6 +263,7 @@ def build_cricket_terms_context():
     lines.append("  free hit               -> free_hit = TRUE")
     lines.append("  wide                   -> legal_ball = FALSE (wide type)")
     lines.append("  no ball                -> legal_ball = FALSE (no-ball type)")
+    lines.append("  scoring shot           -> runs_batter > 0 AND legal_ball = TRUE")
 
     lines.append("\nMATCH CONTEXT:")
     lines.append("  first innings          -> innings_number = 1")
@@ -293,16 +284,30 @@ def build_cricket_terms_context():
     lines.append("  bowling average        -> ROUND(SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
     lines.append("  dot ball %             -> ROUND((COUNT(*) FILTER (WHERE runs_total=0 AND legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
     lines.append("  boundary %             -> ROUND((COUNT(*) FILTER (WHERE runs_batter IN (4,6))::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  six %                  -> ROUND((COUNT(*) FILTER (WHERE runs_batter=6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  scoring rate           -> ROUND((COUNT(*) FILTER (WHERE runs_batter>0 AND legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  wickets per match      -> ROUND(COUNT(*) FILTER (WHERE wicket IS NOT NULL)::numeric / NULLIF(COUNT(DISTINCT match_id),0), 2)")
+    lines.append("  balls per wicket       -> ROUND(COUNT(*) FILTER (WHERE legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
+
+    lines.append("\nPARTNERSHIP PATTERNS:")
+    lines.append("  partnership            -> GROUP BY match_id, innings_number, partnership_id (or over/ball window)")
+    lines.append("  opening stand          -> batting_position IN (1,2) same innings/match")
+    lines.append("  50+ partnership        -> filter partnerships SUM(runs_batter) >= 50")
+
+    lines.append("\nCONDITIONAL AGGREGATIONS (most useful patterns):")
+    lines.append("  runs in powerplay      -> SUM(runs_batter) FILTER (WHERE over_number BETWEEN 1 AND 6)")
+    lines.append("  runs in death          -> SUM(runs_batter) FILTER (WHERE over_number BETWEEN 16 AND 20)")
+    lines.append("  wickets in powerplay   -> COUNT(*) FILTER (WHERE wicket IS NOT NULL AND over_number BETWEEN 1 AND 6)")
+    lines.append("  balls in powerplay     -> COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 1 AND 6)")
+    lines.append("  SR in powerplay        -> ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 1 AND 6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 1 AND 6),0))*100,2)")
 
     return "\n".join(lines)
 
 # =========================================================
 # DATE / TIME CONTEXT
-# Critical for year, season, month queries
 # =========================================================
 
 def build_date_context():
-
     lines = []
 
     lines.append("DATE & TIME COLUMN RULES:")
@@ -388,6 +393,272 @@ def build_date_context():
     return "\n".join(lines)
 
 # =========================================================
+# BUILD FORMAT CONTEXT  (NEW)
+# Teaches the model about multi-format cricket
+# =========================================================
+
+def build_format_context():
+    lines = []
+
+    lines.append("CRICKET FORMAT RULES:")
+    lines.append("")
+    lines.append("FORMAT DETECTION from question:")
+    lines.append("  T20 / T20I / IPL / Big Bash / PSL / BBL -> match_type ILIKE '%T20%'  OR match_type = 'T20'")
+    lines.append("  ODI / one-day / 50-over                  -> match_type ILIKE '%ODI%'  OR match_type = 'ODI'")
+    lines.append("  Test / Test match / red-ball              -> match_type ILIKE '%Test%' OR match_type = 'Test'")
+    lines.append("  If no format specified -> do NOT filter on match_type (include all formats)")
+    lines.append("")
+    lines.append("OVER RANGES BY FORMAT:")
+    lines.append("  T20  : total overs 1-20 | powerplay 1-6  | middle 7-15  | death 16-20")
+    lines.append("  ODI  : total overs 1-50 | powerplay 1-10 | middle 11-40 | death 41-50")
+    lines.append("  Test : no fixed over limit; use session or day context if available")
+    lines.append("")
+    lines.append("BENCHMARK DIFFERENCES BY FORMAT:")
+    lines.append("  T20  batting SR elite: >150 | good: 130-150 | average: 110-130")
+    lines.append("  ODI  batting SR elite: >100 | good:  85-100 | average:  70-85")
+    lines.append("  T20  bowling econ  elite: <6.5 | good: 6.5-8 | expensive: >9")
+    lines.append("  ODI  bowling econ  elite: <4.5 | good: 4.5-6 | expensive: >7")
+    lines.append("")
+    lines.append("TOURNAMENT / COMPETITION FILTERING:")
+    lines.append("  Use competition ILIKE '%name%' or match_type for tournament-level filters")
+    lines.append("  IPL       -> competition ILIKE '%IPL%' OR competition ILIKE '%Indian Premier%'")
+    lines.append("  World Cup -> competition ILIKE '%World Cup%'")
+    lines.append("  Champions Trophy -> competition ILIKE '%Champions Trophy%'")
+    lines.append("")
+    lines.append("VENUE / GROUND FILTERING:")
+    lines.append("  home / away / neutral -> venue column if available")
+    lines.append("  at <ground>           -> venue ILIKE '%ground_name%'")
+    lines.append("")
+    lines.append("INNINGS CONTEXT:")
+    lines.append("  T20 powerplay batting (1-6)   -> team sets up innings momentum")
+    lines.append("  T20 death batting (16-20)     -> finisher role, high SR expected")
+    lines.append("  ODI death bowling (41-50)     -> yorker specialists, economy critical")
+    lines.append("  Test new ball                 -> over_number BETWEEN 1 AND 10")
+
+    return "\n".join(lines)
+
+# =========================================================
+# BUILD ADVANCED QUERY PATTERNS CONTEXT  (NEW)
+# Covers complex query scenarios
+# =========================================================
+
+def build_advanced_patterns_context():
+    lines = []
+
+    lines.append("ADVANCED QUERY PATTERNS:")
+    lines.append("")
+
+    lines.append("1. CONSISTENCY / INNINGS PROFILE:")
+    lines.append("""
+  -- Distribution of scores (how often batter reaches milestones)
+  SELECT
+    CASE
+      WHEN innings_runs < 10  THEN '0-9'
+      WHEN innings_runs < 20  THEN '10-19'
+      WHEN innings_runs < 30  THEN '20-29'
+      WHEN innings_runs < 50  THEN '30-49'
+      WHEN innings_runs < 75  THEN '50-74'
+      ELSE '75+'
+    END AS score_band,
+    COUNT(*) AS innings_count
+  FROM (
+    SELECT match_id, innings_number, batter,
+           SUM(runs_batter) AS innings_runs
+    FROM public.nv_play
+    WHERE batter ILIKE '%name%' AND legal_ball = TRUE
+    GROUP BY match_id, innings_number, batter
+  ) t
+  GROUP BY score_band ORDER BY MIN(innings_runs)
+""")
+
+    lines.append("2. OPPONENT-SPECIFIC PERFORMANCE:")
+    lines.append("""
+  SELECT
+    bowling_team                                                               AS opponent,
+    COUNT(DISTINCT match_id)                                                   AS matches,
+    SUM(runs_batter)                                                           AS runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE)                                    AS balls,
+    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average,
+    COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                 AS dismissals
+  FROM public.nv_play
+  WHERE batter ILIKE '%name%'
+  GROUP BY bowling_team ORDER BY runs DESC
+""")
+
+    lines.append("3. BOWLER vs BATTING POSITION:")
+    lines.append("""
+  SELECT
+    batting_position,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE)                                    AS balls,
+    SUM(runs_total)                                                            AS runs_conceded,
+    COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                 AS wickets,
+    ROUND((SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6,2) AS economy,
+    ROUND(SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)  AS bowling_avg
+  FROM public.nv_play
+  WHERE bowler ILIKE '%name%' AND legal_ball = TRUE
+  GROUP BY batting_position ORDER BY batting_position
+""")
+
+    lines.append("4. PHASE-BY-PHASE SPLIT (single query, multi-column):")
+    lines.append("""
+  SELECT
+    batter,
+    -- Powerplay
+    SUM(runs_batter) FILTER (WHERE over_number BETWEEN 1 AND 6)               AS pp_runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 1 AND 6)   AS pp_balls,
+    ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 1 AND 6)::numeric
+           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 1 AND 6),0))*100,2) AS pp_sr,
+    -- Middle
+    SUM(runs_batter) FILTER (WHERE over_number BETWEEN 7 AND 15)              AS mid_runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 7 AND 15)  AS mid_balls,
+    ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 7 AND 15)::numeric
+           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 7 AND 15),0))*100,2) AS mid_sr,
+    -- Death
+    SUM(runs_batter) FILTER (WHERE over_number BETWEEN 16 AND 20)             AS death_runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 16 AND 20) AS death_balls,
+    ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 16 AND 20)::numeric
+           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 16 AND 20),0))*100,2) AS death_sr
+  FROM public.nv_play
+  WHERE batter ILIKE '%name%'
+  GROUP BY batter
+""")
+
+    lines.append("5. RECENT FORM (last N matches):")
+    lines.append("""
+  WITH ranked_matches AS (
+    SELECT match_id, match_date,
+           ROW_NUMBER() OVER (ORDER BY match_date DESC) AS rn
+    FROM public.nv_play
+    WHERE batter ILIKE '%name%'
+    GROUP BY match_id, match_date
+  )
+  SELECT
+    p.match_date,
+    p.match_id,
+    SUM(p.runs_batter)                                                         AS runs,
+    COUNT(*) FILTER (WHERE p.legal_ball=TRUE)                                  AS balls,
+    ROUND((SUM(p.runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE p.legal_ball=TRUE),0))*100,2) AS strike_rate,
+    MAX(p.wicket)                                                              AS dismissal
+  FROM public.nv_play p
+  JOIN ranked_matches r ON p.match_id = r.match_id
+  WHERE p.batter ILIKE '%name%' AND r.rn <= 10
+  GROUP BY p.match_date, p.match_id
+  ORDER BY p.match_date DESC
+""")
+
+    lines.append("6. COMPARISON BETWEEN TWO PLAYERS (side by side):")
+    lines.append("""
+  SELECT
+    batter                                                                     AS player,
+    COUNT(DISTINCT match_id)                                                   AS matches,
+    SUM(runs_batter)                                                           AS runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE)                                    AS balls,
+    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average,
+    COUNT(*) FILTER (WHERE runs_batter=4)                                      AS fours,
+    COUNT(*) FILTER (WHERE runs_batter=6)                                      AS sixes,
+    ROUND((COUNT(*) FILTER (WHERE runs_total=0 AND legal_ball=TRUE)::numeric
+           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)        AS dot_pct
+  FROM public.nv_play
+  WHERE batter ILIKE '%player1%' OR batter ILIKE '%player2%'
+  GROUP BY batter
+""")
+
+    lines.append("7. WICKET WICKET CONTRIBUTION (top wicket-takers for a team):")
+    lines.append("""
+  SELECT
+    bowler,
+    COUNT(DISTINCT match_id)                                                   AS matches,
+    COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                 AS wickets,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE)                                    AS balls,
+    SUM(runs_total)                                                            AS runs_conceded,
+    ROUND((SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6,2) AS economy,
+    ROUND(SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)  AS bowling_avg,
+    ROUND(COUNT(*) FILTER (WHERE legal_ball=TRUE)::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)           AS strike_rate
+  FROM public.nv_play
+  WHERE bowling_team ILIKE '%team%'
+  GROUP BY bowler
+  ORDER BY wickets DESC LIMIT 15
+""")
+
+    lines.append("8. PRESSURE / CHASE ANALYSIS:")
+    lines.append("""
+  -- Batter performance chasing vs setting
+  SELECT
+    CASE WHEN innings_number = 1 THEN 'Setting' ELSE 'Chasing' END            AS innings_type,
+    COUNT(DISTINCT match_id)                                                   AS matches,
+    SUM(runs_batter)                                                           AS runs,
+    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average
+  FROM public.nv_play
+  WHERE batter ILIKE '%name%'
+  GROUP BY innings_number
+""")
+
+    lines.append("9. OVER-BY-OVER ECONOMY / RUN RATE:")
+    lines.append("""
+  SELECT
+    over_number,
+    ROUND(AVG(over_runs),2)    AS avg_runs_per_over,
+    SUM(over_wickets)          AS total_wickets,
+    COUNT(*)                   AS overs_bowled
+  FROM (
+    SELECT match_id, innings_number, over_number,
+           SUM(runs_total)                         AS over_runs,
+           COUNT(*) FILTER (WHERE wicket IS NOT NULL) AS over_wickets
+    FROM public.nv_play
+    GROUP BY match_id, innings_number, over_number
+  ) t
+  GROUP BY over_number ORDER BY over_number
+""")
+
+    lines.append("10. DISMISSAL BREAKDOWN BY BOWLER TYPE / PHASE:")
+    lines.append("""
+  SELECT
+    wicket                                                                     AS dismissal_type,
+    COUNT(*)                                                                   AS count,
+    ROUND(COUNT(*)::numeric / NULLIF(SUM(COUNT(*)) OVER(),0)*100,2)           AS pct
+  FROM public.nv_play
+  WHERE batter ILIKE '%name%' AND wicket IS NOT NULL
+  GROUP BY wicket ORDER BY count DESC
+""")
+
+    lines.append("11. HEAD-TO-HEAD DETAILED:")
+    lines.append("""
+  SELECT
+    batter, bowler,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE)                                    AS balls,
+    SUM(runs_batter)                                                           AS runs,
+    COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                 AS dismissals,
+    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS batter_sr,
+    COUNT(*) FILTER (WHERE runs_total=0 AND legal_ball=TRUE)                   AS dots,
+    COUNT(*) FILTER (WHERE runs_batter IN (4,6))                               AS boundaries
+  FROM public.nv_play
+  WHERE batter ILIKE '%x%' AND bowler ILIKE '%y%'
+  GROUP BY batter, bowler
+""")
+
+    lines.append("12. TOP SCORERS / WICKET-TAKERS LEADERBOARD:")
+    lines.append("""
+  -- Batting leaderboard
+  SELECT
+    batter,
+    COUNT(DISTINCT match_id)                                                   AS matches,
+    SUM(runs_batter)                                                           AS runs,
+    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average,
+    MAX(innings_high_score)                                                    AS high_score  -- if column exists
+  FROM public.nv_play
+  GROUP BY batter
+  HAVING COUNT(*) FILTER (WHERE legal_ball=TRUE) >= 30
+  ORDER BY runs DESC LIMIT 20
+""")
+
+    return "\n".join(lines)
+
+# =========================================================
 # STRIP HAVING CLAUSES
 # =========================================================
 
@@ -413,7 +684,6 @@ def results_are_empty(query_results):
 
 @app.get("/health")
 def health_check():
-
     try:
         conn = get_db_connection()
         conn.close()
@@ -434,7 +704,6 @@ def gemini_test():
 # =========================================================
 
 def clean_sql(sql_query):
-
     sql_query = sql_query.replace("```sql", "").replace("```", "")
     sql_query = sql_query.strip()
     sql_query = " ".join(sql_query.split())
@@ -444,28 +713,35 @@ def clean_sql(sql_query):
     sql_query = sql_query.replace("wicket = FALSE", "wicket IS NULL")
     sql_query = sql_query.replace("wicket=FALSE",   "wicket IS NULL")
 
-    # Fix MySQL-style YEAR() function -> PostgreSQL EXTRACT
+    # Fix MySQL-style YEAR() -> PostgreSQL EXTRACT
     sql_query = re.sub(
         r'\bYEAR\s*\(\s*(\w+)\s*\)',
         r'EXTRACT(YEAR FROM \1)',
-        sql_query,
-        flags=re.IGNORECASE
+        sql_query, flags=re.IGNORECASE
     )
-
-    # Fix MONTH() -> EXTRACT
+    # Fix MONTH()
     sql_query = re.sub(
         r'\bMONTH\s*\(\s*(\w+)\s*\)',
         r'EXTRACT(MONTH FROM \1)',
-        sql_query,
-        flags=re.IGNORECASE
+        sql_query, flags=re.IGNORECASE
     )
-
-    # Fix DAY() -> EXTRACT
+    # Fix DAY()
     sql_query = re.sub(
         r'\bDAY\s*\(\s*(\w+)\s*\)',
         r'EXTRACT(DAY FROM \1)',
-        sql_query,
-        flags=re.IGNORECASE
+        sql_query, flags=re.IGNORECASE
+    )
+    # Fix IFNULL -> COALESCE
+    sql_query = re.sub(
+        r'\bIFNULL\s*\(',
+        'COALESCE(',
+        sql_query, flags=re.IGNORECASE
+    )
+    # Fix NVL -> COALESCE
+    sql_query = re.sub(
+        r'\bNVL\s*\(',
+        'COALESCE(',
+        sql_query, flags=re.IGNORECASE
     )
 
     return sql_query.strip()
@@ -475,9 +751,7 @@ def clean_sql(sql_query):
 # =========================================================
 
 def validate_sql(sql_query):
-
     allowed_keywords = ["SELECT", "WITH"]
-
     first_word = sql_query.strip().split()[0].upper()
 
     if first_word not in allowed_keywords:
@@ -487,231 +761,230 @@ def validate_sql(sql_query):
         "DELETE", "DROP", "UPDATE", "INSERT",
         "ALTER", "TRUNCATE", "CREATE"
     ]
-
     upper_sql = sql_query.upper()
-
     for keyword in blocked_keywords:
         if keyword in upper_sql:
             raise Exception(f"{keyword} operation not allowed.")
 
 # =========================================================
-# GENERATE QUERY PLAN
+# GENERATE QUERY PLAN  (ENHANCED)
 # =========================================================
 
 def generate_query_plan(question, relax_thresholds=False):
 
-    schema_context  = build_schema_context(question)
-    metrics_context = build_metrics_context()
-    rules_context   = build_rules_context()
-    cricket_terms   = build_cricket_terms_context()
-    date_context    = build_date_context()
+    schema_context   = build_schema_context(question)
+    metrics_context  = build_metrics_context()
+    rules_context    = build_rules_context()
+    cricket_terms    = build_cricket_terms_context()
+    date_context     = build_date_context()
+    format_context   = build_format_context()
+    advanced_patterns = build_advanced_patterns_context()
 
     threshold_note = ""
     if relax_thresholds:
         threshold_note = """
-IMPORTANT - RETRY MODE:
-This is a retry after empty results.
-DO NOT use any HAVING clauses or minimum ball/innings thresholds.
-Return ALL available data regardless of sample size.
-The insight layer will handle small sample size caveats.
+⚠️  RETRY MODE — EMPTY RESULTS PREVIOUSLY:
+- DO NOT add any HAVING clauses or minimum ball/innings thresholds.
+- Return ALL rows regardless of sample size.
+- The insight layer will add small-sample caveats automatically.
+- Widen name matching if needed: use ILIKE '%partial_name%'
 """
 
     prompt = f"""
-You are Cricket_Scorer_AI - an elite cricket data engineer and analyst with
-encyclopaedic knowledge of T20, ODI, Test, and domestic cricket formats.
+You are Cricket_Scorer_AI — an elite cricket data engineer and analyst with deep
+knowledge of T20, ODI, Test, and domestic cricket formats globally.
 
-Your job: translate ANY natural language cricket question into a precise,
-correct, multi-query PostgreSQL plan — including questions about time periods,
-years, seasons, date ranges, cricket terminology, and complex statistics.
+Your ONLY job: translate the user's natural language cricket question into a
+precise, correct, multi-query PostgreSQL plan that returns ALL data needed
+to answer it fully, including complex statistics, time trends, opponent splits,
+phase analysis, and comparisons.
 
 {threshold_note}
 
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
 DATABASE
-═══════════════════════════════════════
-Table: public.nv_play
-Each row = one delivery (ball) in a cricket match.
+══════════════════════════════════════════════════════════
+Table  : public.nv_play
+Grain  : ONE ROW = ONE DELIVERY (ball) in a cricket match
+Engine : PostgreSQL — strict syntax required
 
-═══════════════════════════════════════
-SCHEMA
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
+SCHEMA (columns available)
+══════════════════════════════════════════════════════════
 {schema_context}
 
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
 DERIVED METRICS
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
 {metrics_context}
 
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
 CRICKET RULES & BENCHMARKS
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
 {rules_context}
 
-═══════════════════════════════════════
-CRICKET TERMINOLOGY -> SQL
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
+CRICKET TERMINOLOGY → SQL
+══════════════════════════════════════════════════════════
 {cricket_terms}
 
-═══════════════════════════════════════
-DATE & TIME RULES  ← READ CAREFULLY
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
+DATE & TIME RULES
+══════════════════════════════════════════════════════════
 {date_context}
 
-═══════════════════════════════════════
-CRITICAL COLUMN RULES
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
+FORMAT & COMPETITION CONTEXT
+══════════════════════════════════════════════════════════
+{format_context}
 
-WICKETS:
-  - wicket column is TEXT: 'Caught', 'Bowled', 'LBW', 'Run Out', 'Stumped', 'Hit Wicket'
-  - NEVER: wicket = TRUE / wicket = FALSE
-  - dismissed  -> wicket IS NOT NULL
-  - not out    -> wicket IS NULL
-  - specific   -> wicket = 'Caught'
+══════════════════════════════════════════════════════════
+ADVANCED QUERY PATTERNS (use as templates)
+══════════════════════════════════════════════════════════
+{advanced_patterns}
 
-BOOLEANS: legal_ball, free_hit, around_the_wicket, keeper_up  -> use TRUE / FALSE
+══════════════════════════════════════════════════════════
+CRITICAL COLUMN RULES — NEVER VIOLATE
+══════════════════════════════════════════════════════════
 
-RUNS:
-  - Always SUM — one row = one ball, not a match
-  - Strike rate = (SUM(runs_batter) / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0)) * 100
-  - Economy     = (SUM(runs_total)  / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0)) * 6
+WICKETS (TEXT column):
+  Values: 'Caught', 'Bowled', 'LBW', 'Run Out', 'Stumped', 'Hit Wicket'
+  ✅ dismissed        -> wicket IS NOT NULL
+  ✅ specific type    -> wicket = 'Caught'
+  ✅ not out          -> wicket IS NULL
+  ❌ NEVER: wicket = TRUE / wicket = FALSE / wicket = 1
 
-NAMES: Use ILIKE '%name%' for all player and team name matching
+BOOLEANS (use TRUE/FALSE, not 1/0):
+  legal_ball, free_hit, around_the_wicket, keeper_up
 
-═══════════════════════════════════════
+RUNS (always aggregate — one row = one ball):
+  ✅ Strike rate  = (SUM(runs_batter) / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0)) * 100
+  ✅ Economy rate = (SUM(runs_total)  / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0)) * 6
+  ❌ NEVER treat a single row as an innings total
+
+NAMES: ALWAYS use ILIKE '%name%' — player names may have spaces, initials, variants
+SCHEMA ONLY: NEVER invent column names not in the schema above
+POSTGRESQL ONLY: EXTRACT(), COALESCE(), FILTER (WHERE ...) — not MySQL/MSSQL syntax
+
+══════════════════════════════════════════════════════════
 QUERY DESIGN RULES
-═══════════════════════════════════════
+══════════════════════════════════════════════════════════
 
-1.  SELECT or WITH...SELECT only. PostgreSQL syntax ONLY.
-2.  Never invent column names. Schema columns only.
-3.  Meaningful alias on every computed column.
-4.  ROUND(value::numeric, 2) for all decimals.
-5.  NULLIF(..., 0) on EVERY denominator.
-6.  LIMIT: leaderboards -> 15-20. Single entity -> no LIMIT.
-7.  ORDER BY meaningfully. Time queries -> ORDER BY year ASC.
-8.  TEAM   -> GROUP BY batting_team or bowling_team.
-9.  PLAYER -> GROUP BY batter or GROUP BY bowler.
-10. TIME   -> GROUP BY EXTRACT(YEAR FROM match_date) AS year
-              Always alias as 'year', always ORDER BY year ASC.
+1.  SELECT or WITH...SELECT only. Pure PostgreSQL.
+2.  Every computed column MUST have a meaningful alias.
+3.  ROUND(value::numeric, 2) on ALL decimal results.
+4.  NULLIF(..., 0) on EVERY denominator — no division-by-zero exceptions.
+5.  LIMIT 15-20 for open leaderboards. No LIMIT for specific entity queries.
+6.  ORDER BY most informative column. Time queries → ORDER BY year ASC.
+7.  COUNT(DISTINCT match_id) AS matches_played for match counts.
+8.  Use conditional aggregation FILTER (WHERE ...) to split phases in one query.
+9.  CTEs (WITH clauses) for complex multi-step logic (recent form, percentages).
+10. When comparing two players/teams, use OR in WHERE and GROUP BY entity.
 
-THRESHOLDS — CRITICAL RULE:
-  APPLY HAVING only for open leaderboards (no specific entity named):
-    Batting: HAVING COUNT(*) FILTER (WHERE legal_ball=TRUE) >= 30
-    Bowling: HAVING COUNT(*) FILTER (WHERE legal_ball=TRUE) >= 24
-  NEVER apply HAVING when:
-    - Specific team named (Wimbledon, MI, CSK, any team name)
-    - Specific player named
-    - Specific year, date, or season mentioned
-    - Batting position terms used (top order, openers, etc.)
-    - Question asks about ALL players/matches of an entity
+THRESHOLD RULE (HAVING):
+  ✅ APPLY only for open leaderboards (no specific entity named in question):
+      Batting leaderboard: HAVING COUNT(*) FILTER (WHERE legal_ball=TRUE) >= 30
+      Bowling leaderboard: HAVING COUNT(*) FILTER (WHERE legal_ball=TRUE) >= 24
+  ❌ NEVER apply HAVING when:
+      - A specific player name is mentioned
+      - A specific team name is mentioned
+      - A specific year / date / season is mentioned
+      - A batting position term is used (top order, openers, etc.)
+      - Question is about a named entity's full career / history
 
-COMPLEX QUESTIONS — use MULTIPLE queries:
-  Query 1: Overall / career / full-period summary
-  Query 2: Year-by-year OR phase breakdown
-  Query 3: Ranking, comparison, or opponent breakdown
-  Query 4: (optional) Dismissal types or special situations
+MULTI-QUERY STRATEGY — use 2-4 queries for complex questions:
+  Q1: Career / overall / full-period summary (always include)
+  Q2: Year-by-year breakdown OR phase split OR opponent split
+  Q3: Comparison, ranking, or head-to-head breakdown
+  Q4 (optional): Dismissal types, special situations, recent form
 
-Always include: player/team name, match count, balls faced/bowled, year if time query.
-Use COUNT(DISTINCT match_id) AS matches_played for match counts.
+══════════════════════════════════════════════════════════
+ANALYSIS TYPE DETECTION — map question → query strategy
+══════════════════════════════════════════════════════════
 
-═══════════════════════════════════════
-COMPLEX QUERY PATTERNS
-═══════════════════════════════════════
+YEARLY / TREND           -> GROUP BY EXTRACT(YEAR FROM match_date), ORDER BY year ASC
+CAREER BATTING           -> career totals + phase split + dismissal breakdown
+CAREER BOWLING           -> career totals + phase split + dismissal methods + opponent split
+TEAM BATTING             -> team totals + phase split + top run-scorers
+TEAM BOWLING             -> team economy + wicket-takers + phase split
+HEAD TO HEAD             -> batter vs bowler matchup (h2h query + over-by-over optional)
+PARTNERSHIP              -> partnership runs, balls, SR — group by partnership window
+MATCH SUMMARY            -> innings totals, RR, wickets, top performers per team
+LEADERBOARD              -> ranked list + HAVING thresholds (batting or bowling)
+PHASE ANALYSIS           -> powerplay / middle / death split — conditional aggregation
+DISMISSAL ANALYSIS       -> wicket type breakdown + % share + by bowling type
+BATTING POSITION         -> split by batting_position or position range
+OVER ANALYSIS            -> over-by-over run rates, wickets, economy
+DATE RANGE               -> filter match_date with BETWEEN or EXTRACT
+RECENT FORM              -> CTE ranked by match_date DESC, last N matches
+OPPONENT ANALYSIS        -> GROUP BY bowling_team (for batter) or batting_team (for bowler)
+CONSISTENCY              -> innings score distribution bands
+INNINGS COMPARISON       -> first vs second innings stats
+FORMAT COMPARISON        -> split by match_type (T20 vs ODI)
+PRESSURE / CHASE         -> innings_number = 1 vs 2 split
+ALL-ROUNDER PROFILE      -> batting + bowling stats in same response
+MILESTONE TRACKING       -> 50s, 100s, 5-wicket hauls — sub-query or CASE counting
 
-YEARLY TEAM PERFORMANCE (use for "every year", "year by year", "each season"):
-  SELECT
-    EXTRACT(YEAR FROM match_date)                                              AS year,
-    COUNT(DISTINCT match_id)                                                   AS matches,
-    SUM(runs_total)                                                            AS total_runs,
-    COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                 AS wickets_lost,
-    ROUND((SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6, 2) AS run_rate,
-    ROUND(SUM(runs_total)::numeric / NULLIF(COUNT(DISTINCT match_id),0), 2)    AS avg_score_per_match
-  FROM public.nv_play
-  WHERE batting_team ILIKE '%team_name%'
-  GROUP BY EXTRACT(YEAR FROM match_date)
-  ORDER BY year ASC
+══════════════════════════════════════════════════════════
+COMPLEX QUESTION EXAMPLES (for reference)
+══════════════════════════════════════════════════════════
 
-YEARLY PLAYER PERFORMANCE:
-  SELECT
-    EXTRACT(YEAR FROM match_date)                                              AS year,
-    COUNT(DISTINCT match_id)                                                   AS matches,
-    SUM(runs_batter)                                                           AS runs,
-    COUNT(*) FILTER (WHERE legal_ball=TRUE)                                    AS balls_faced,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2) AS strike_rate,
-    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)     AS average
-  FROM public.nv_play
-  WHERE batter ILIKE '%player%'
-  GROUP BY EXTRACT(YEAR FROM match_date)
-  ORDER BY year ASC
+"How has [player] performed against pace vs spin?"
+→ Q1: vs pace bowlers (bowl_type ILIKE '%pace%' or pace indicator)
+→ Q2: vs spin bowlers
+→ Q3: Phase split within each
 
-PHASE COMPARISON:
-  SELECT
-    CASE WHEN over_number BETWEEN 1  AND 6  THEN 'Powerplay'
-         WHEN over_number BETWEEN 7  AND 15 THEN 'Middle'
-         WHEN over_number BETWEEN 16 AND 20 THEN 'Death'
-    END AS phase, ...
-  GROUP BY phase
+"Which bowlers does [batter] struggle against?"
+→ Q1: h2h vs all bowlers faced, ORDER BY batter SR ASC (lowest = struggle)
+→ Q2: Dismissal methods breakdown
 
-HEAD-TO-HEAD:
-  SELECT batter, bowler,
-    COUNT(*) FILTER (WHERE legal_ball=TRUE) AS balls,
-    SUM(runs_batter) AS runs,
-    COUNT(*) FILTER (WHERE wicket IS NOT NULL) AS dismissals,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS sr
-  FROM public.nv_play
-  WHERE batter ILIKE '%x%' AND bowler ILIKE '%y%'
+"How does [team] perform in run-chases vs setting totals?"
+→ Q1: innings_number=2 (chasing) stats
+→ Q2: innings_number=1 (setting) stats
+→ Q3: Year-by-year chase success rate if possible
 
-OVER-BY-OVER:
-  SELECT over_number,
-    ROUND(AVG(runs_total),2) AS avg_runs,
-    COUNT(*) FILTER (WHERE wicket IS NOT NULL) AS wickets
-  FROM public.nv_play
-  GROUP BY over_number ORDER BY over_number
+"Who are the most consistent batters in the powerplay?"
+→ Q1: Powerplay batting leaderboard (SR + dot% + boundary%)
+→ Q2: Phase comparison (how PP SR compares to their overall SR)
 
-═══════════════════════════════════════
-ANALYSIS TYPE DETECTION
-═══════════════════════════════════════
+"Compare [player1] and [player2] over the last 3 years"
+→ Q1: Side-by-side career comparison (last 3 years)
+→ Q2: Year-by-year for both players
+→ Q3: Phase split for both
 
-YEARLY / SEASONAL     -> GROUP BY EXTRACT(YEAR FROM match_date) — ALWAYS for "every year", "each season", "year by year", "annual", "trend over years"
-INDIVIDUAL BATTING    -> career stats + phase breakdown + dismissal types
-INDIVIDUAL BOWLING    -> career stats + phase breakdown + dismissal methods
-TEAM BATTING          -> team totals + phase breakdown + top contributors
-TEAM BOWLING          -> team economy + wicket takers + phase breakdown
-HEAD TO HEAD          -> batter vs bowler matchup stats
-PARTNERSHIP           -> runs/balls together, run rate as a pair
-MATCH SUMMARY         -> innings totals, run rate, wickets, top performers
-LEADERBOARD           -> ranked list with thresholds applied
-PHASE ANALYSIS        -> powerplay / middle / death comparison
-DISMISSAL ANALYSIS    -> type breakdown + bowler causing each type
-BATTING POSITION      -> top order / middle order / tail analysis
-OVER ANALYSIS         -> over-by-over run rates and wickets
-DATE RANGE            -> filter by specific date range or period
-RECENT FORM           -> last N matches, ORDER BY match_date DESC
+══════════════════════════════════════════════════════════
+OUTPUT FORMAT — STRICT
+══════════════════════════════════════════════════════════
 
-═══════════════════════════════════════
-OUTPUT FORMAT
-═══════════════════════════════════════
-
-Return ONLY valid JSON. No markdown. No explanation. No extra text.
+Return ONLY valid JSON. No markdown. No explanation. No preamble.
+The JSON must be parseable directly with json.loads().
 
 {{
   "analysis_type": "single | multi",
-  "intent": "precise description of what user is asking including time dimension if present",
-  "has_time_dimension": true or false,
-  "threshold_applied": true or false,
+  "intent": "precise 1-2 sentence description of what the user is asking, including time/format/phase dimensions",
+  "has_time_dimension": true | false,
+  "has_phase_dimension": true | false,
+  "has_comparison": true | false,
+  "threshold_applied": true | false,
   "queries": [
     {{
       "name": "descriptive_snake_case_name",
-      "purpose": "exactly what this query computes",
+      "purpose": "exactly what this query computes and why it answers the question",
       "sql": "SELECT ..."
     }}
   ]
 }}
 
-USER QUESTION
+USER QUESTION:
 {question}
 """
 
     raw = llm(prompt).replace("```json", "").replace("```", "").strip()
+
+    # Robust JSON extraction — handle LLM preamble
+    json_match = re.search(r'\{[\s\S]*\}', raw)
+    if json_match:
+        raw = json_match.group(0)
 
     try:
         return json.loads(raw)
@@ -719,6 +992,8 @@ USER QUESTION
         return {
             "analysis_type": "single",
             "has_time_dimension": False,
+            "has_phase_dimension": False,
+            "has_comparison": False,
             "threshold_applied": False,
             "queries": [
                 {
@@ -730,14 +1005,15 @@ USER QUESTION
         }
 
 # =========================================================
-# FALLBACK SQL
+# FALLBACK SQL  (ENHANCED)
 # =========================================================
 
 def generate_fallback_sql(question):
 
-    schema_context = build_schema_context(question)
-    cricket_terms  = build_cricket_terms_context()
-    date_context   = build_date_context()
+    schema_context  = build_schema_context(question)
+    cricket_terms   = build_cricket_terms_context()
+    date_context    = build_date_context()
+    format_context  = build_format_context()
 
     prompt = f"""
 You are a PostgreSQL expert for cricket ball-by-ball data.
@@ -753,31 +1029,35 @@ CRICKET TERMINOLOGY:
 DATE & TIME RULES:
 {date_context}
 
+FORMAT RULES:
+{format_context}
+
 STRICT RULES:
-1.  Return ONLY the raw SQL — no explanation, no markdown, no backticks.
-2.  SELECT only. PostgreSQL syntax ONLY.
-3.  Only schema columns — never invent columns.
-4.  wicket is TEXT — use wicket IS NOT NULL, never wicket = TRUE.
-5.  legal_ball, free_hit, around_the_wicket, keeper_up are BOOLEAN.
-6.  ROUND(value::numeric, 2) for all decimals.
-7.  NULLIF(..., 0) on all denominators.
-8.  Meaningful aliases on every column.
-9.  LIMIT 20 for open rankings.
-10. ILIKE for all name matching.
+1.  Return ONLY the raw SQL — no explanation, no markdown, no backticks, no preamble.
+2.  SELECT or WITH...SELECT only. Pure PostgreSQL syntax.
+3.  Only schema columns — NEVER invent column names.
+4.  wicket is TEXT — use wicket IS NOT NULL (not wicket = TRUE).
+5.  legal_ball, free_hit, around_the_wicket, keeper_up are BOOLEAN — use TRUE/FALSE.
+6.  ROUND(value::numeric, 2) for all decimal columns.
+7.  NULLIF(..., 0) on ALL denominators.
+8.  Meaningful alias on every computed column.
+9.  LIMIT 20 for open leaderboards.
+10. ILIKE '%name%' for all name matching.
 11. NO HAVING clauses — return all available data.
-12. DATE QUERIES: use EXTRACT(YEAR FROM match_date) — NEVER use YEAR() function.
-13. For yearly grouping: GROUP BY EXTRACT(YEAR FROM match_date) ORDER BY year ASC.
+12. DATE QUERIES: EXTRACT(YEAR FROM match_date) — NEVER use YEAR() function.
+13. Yearly grouping: GROUP BY EXTRACT(YEAR FROM match_date) ORDER BY year ASC.
 14. Always alias EXTRACT(YEAR FROM match_date) AS year.
+15. Strike rate = (SUM(runs_batter) / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0)) * 100
+16. Economy    = (SUM(runs_total)  / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0)) * 6
+17. NEVER use IFNULL, NVL, YEAR(), MONTH(), DATEPART() — these are not PostgreSQL.
 
 QUESTION:
 {question}
 """
 
     sql_query = clean_sql(llm(prompt))
-
     if not sql_query.endswith(";"):
         sql_query += ";"
-
     return sql_query
 
 # =========================================================
@@ -785,18 +1065,15 @@ QUESTION:
 # =========================================================
 
 def execute_sql(sql_query):
-
     validate_sql(sql_query)
 
     conn   = get_db_connection()
     cursor = conn.cursor()
-
     cursor.execute(sql_query)
     rows    = cursor.fetchall()
     columns = [desc[0] for desc in cursor.description]
 
     results = []
-
     for row in rows:
         row_dict = {}
         for i, value in enumerate(row):
@@ -807,7 +1084,6 @@ def execute_sql(sql_query):
 
     cursor.close()
     conn.close()
-
     return results
 
 # =========================================================
@@ -815,27 +1091,22 @@ def execute_sql(sql_query):
 # =========================================================
 
 def execute_query_plan(query_plan):
-
     all_results = []
     all_sql     = []
 
     for q in query_plan.get("queries", []):
-
         sql_query = clean_sql(q["sql"])
-
         if not sql_query.endswith(";"):
             sql_query += ";"
 
         try:
             results = execute_sql(sql_query)
-
             all_results.append({
                 "query_name": q["name"],
                 "purpose":    q["purpose"],
                 "sql":        sql_query,
                 "results":    results
             })
-
             all_sql.append(sql_query)
 
         except Exception as e:
@@ -864,7 +1135,6 @@ def execute_query_plan_with_retry(query_plan, question):
             "analysis_type": query_plan.get("analysis_type", "single"),
             "queries": []
         }
-
         for q in query_plan.get("queries", []):
             relaxed_sql = strip_having_clauses(q["sql"])
             retry_plan["queries"].append({
@@ -875,12 +1145,10 @@ def execute_query_plan_with_retry(query_plan, question):
 
         retry_results, retry_sql = execute_query_plan(retry_plan)
 
-        # Stage 2 — regenerate entire plan without thresholds
+        # Stage 2 — full regeneration without thresholds
         if results_are_empty(retry_results):
-
             fresh_plan = generate_query_plan(question, relax_thresholds=True)
             fresh_results, fresh_sql = execute_query_plan(fresh_plan)
-
             return fresh_results, fresh_sql, True
 
         return retry_results, retry_sql, True
@@ -892,15 +1160,13 @@ def execute_query_plan_with_retry(query_plan, question):
 # =========================================================
 
 def format_results(results):
-
     if not results:
         return "No results found."
 
     headers    = list(results[0].keys())
     header_row = " | ".join(headers)
     separator  = "-" * len(header_row)
-
-    table = [header_row, separator]
+    table      = [header_row, separator]
 
     for row in results:
         table.append(" | ".join(str(v) for v in row.values()))
@@ -908,215 +1174,316 @@ def format_results(results):
     return "\n".join(table)
 
 # =========================================================
-# GENERATE CRICKET INSIGHT
+# GENERATE CRICKET INSIGHT  (ENHANCED)
 # =========================================================
 
 def generate_cricket_insight(question, query_results, small_sample=False):
 
-    compact_data          = json.dumps(query_results, default=str)[:12000]
+    compact_data          = json.dumps(query_results, default=str)[:14000]
     insight_rules_context = build_insight_rules_context()
+    format_context        = build_format_context()
 
     small_sample_note = ""
     if small_sample:
         small_sample_note = """
-NOTE: Small sample size — thresholds were relaxed to retrieve this data.
-Mention naturally (e.g. "based on limited data") but still analyse fully.
-Do not refuse to analyse.
+⚠️  SMALL SAMPLE SIZE NOTE:
+Thresholds were relaxed to retrieve this data. Mention naturally within the analysis
+(e.g. "across limited appearances", "based on a small sample") — do NOT refuse to analyse.
+Still apply tier benchmarks and give a full verdict.
 """
 
-    # Detect if this is a time-based query for extra insight instructions
-    time_keywords = ["year", "season", "annual", "trend", "every", "each year",
-                     "monthly", "over time", "progression", "2021", "2022",
-                     "2023", "2024", "2025", "recent", "latest", "history"]
+    # Detect question dimensions for tailored insight instructions
+    time_keywords    = ["year", "season", "annual", "trend", "every", "each year",
+                        "monthly", "over time", "progression", "2021", "2022",
+                        "2023", "2024", "2025", "recent", "latest", "history"]
+    phase_keywords   = ["powerplay", "pp", "middle over", "death", "slog", "phase"]
+    compare_keywords = ["vs", "versus", "compare", "comparison", "between", "better",
+                        "worse", "who is", "which team", "both"]
+    form_keywords    = ["recent", "last", "form", "current", "now", "this year",
+                        "last 5", "last 10"]
+    opponent_keywords = ["against", "vs", "versus", "opponent", "facing", "bowled by"]
 
-    is_time_query = any(kw in question.lower() for kw in time_keywords)
+    is_time_query     = any(kw in question.lower() for kw in time_keywords)
+    is_phase_query    = any(kw in question.lower() for kw in phase_keywords)
+    is_comparison     = any(kw in question.lower() for kw in compare_keywords)
+    is_form_query     = any(kw in question.lower() for kw in form_keywords)
+    is_opponent_query = any(kw in question.lower() for kw in opponent_keywords)
 
-    time_insight_note = ""
+    dimension_notes = ""
+
     if is_time_query:
-        time_insight_note = """
-TIME-BASED ANALYSIS INSTRUCTIONS:
-- This question has a time/year dimension — structure your analysis accordingly
-- Identify the TREND: is performance improving, declining, or consistent year-over-year?
-- Highlight the BEST year and WORST year with exact figures
-- Mention year-on-year changes (e.g. "SR improved from 124 in 2022 to 141 in 2023")
-- Note any significant dips or spikes and what they might indicate
-- In the Key Numbers table include a 'Year' column as the first column
-- In Standout Moments highlight the peak year performance
-- In Verdict summarise the overall trajectory (rising/declining/consistent)
+        dimension_notes += """
+TIME-SERIES INSTRUCTIONS:
+- Structure analysis chronologically: earliest year → latest year
+- Identify TREND clearly: improving / declining / inconsistent / peaking
+- Call out the BEST year and WORST year with exact stats
+- Describe year-on-year delta: "SR jumped from 124 in 2022 to 141 in 2023 (+17)"
+- Note any inflection points and what may explain them (injuries, team changes, format switch)
+- In Key Numbers table: Year | Matches | primary metric columns
+- In Verdict: is the trajectory upward, downward, or plateauing?
+"""
+
+    if is_phase_query:
+        dimension_notes += """
+PHASE ANALYSIS INSTRUCTIONS:
+- Dedicate a section to each phase (Powerplay / Middle / Death)
+- Classify each phase performance against T20 benchmarks
+- Identify the player/team's strongest and weakest phase explicitly
+- Explain TACTICAL implications: "The high powerplay SR suggests intent to dominate with new ball"
+- Link phase weaknesses to dismissal patterns if data supports it
+"""
+
+    if is_comparison:
+        dimension_notes += """
+COMPARISON INSTRUCTIONS:
+- Present both entities side-by-side — never analyse them in isolation
+- Use a direct comparison table as the first table in Key Numbers
+- Determine a clear winner on each metric — state it explicitly
+- Give an overall verdict: "Player A is the superior T20 batter based on..."
+- Note where each entity has an edge and why it matters tactically
+"""
+
+    if is_form_query:
+        dimension_notes += """
+RECENT FORM INSTRUCTIONS:
+- Distinguish clearly between career stats and recent form
+- Is the recent form better or worse than career average? By how much?
+- Identify if there's a hot streak or a lean patch with specific match data
+- In Verdict: comment on current momentum heading into future matches
+"""
+
+    if is_opponent_query:
+        dimension_notes += """
+OPPONENT ANALYSIS INSTRUCTIONS:
+- Rank opponents from best-performance to worst-performance
+- Identify the "bogey team/bowler" — where the entity clearly struggles
+- Identify the "favourite" opponent — where they dominate
+- Note if the sample is large enough to draw conclusions per opponent
+- Tactical takeaway: what does the opponent split suggest about the entity's game?
 """
 
     prompt = f"""
-You are Cricket_Scorer_AI - a world-class cricket analyst combining the
-tactical depth of a coaching analyst, the storytelling of a top commentator,
-and the precision of a statistician.
+You are Cricket_Scorer_AI — a world-class cricket analyst combining the tactical depth
+of a coaching analyst, the storytelling of a top commentator, and the precision of a
+data scientist. You have deep knowledge of T20, ODI, Test and domestic cricket.
 
 {small_sample_note}
-{time_insight_note}
 
-USER QUESTION
+USER QUESTION:
 {question}
 
-DATA FROM DATABASE
+DATA FROM DATABASE:
 {compact_data}
 
-CRICKET RULES, BENCHMARKS & INSIGHT GUIDELINES
+CRICKET RULES, BENCHMARKS & INSIGHT GUIDELINES:
 {insight_rules_context}
 
-YOUR TASK
+FORMAT & COMPETITION CONTEXT:
+{format_context}
 
-Produce a rich, structured cricket analysis report. Follow this layout exactly:
+DIMENSION-SPECIFIC INSTRUCTIONS:
+{dimension_notes}
+
+══════════════════════════════════════════════════════════
+YOUR TASK
+══════════════════════════════════════════════════════════
+
+Produce a rich, structured cricket analysis report that FULLY answers the question.
+Use ONLY data from the database results above — never fabricate statistics.
+Every claim must be backed by a specific number from the data.
+
+Follow this layout exactly:
 
 ---
 
-## 🏏 [Compelling headline — include time period if relevant e.g. "Wimbledon's Batting Through the Years"]
+## 🏏 [Compelling, specific headline — include entity name and time/context if relevant]
 
 ### 📊 Key Numbers
-Clean markdown table with actual numbers.
-For time queries: Year | Matches | Runs | SR | Average (etc.)
-For player queries: Player | Matches | Runs | SR | Average | 4s | 6s
-For team queries: Team | Matches | Runs | Run Rate | Wickets Lost
+Markdown table with actual numbers from the data.
+Column headers depend on analysis type:
+- Time queries  : Year | Matches | Runs/Wickets | SR/Economy | Average
+- Player queries: Metric | Value (or side-by-side for comparisons)
+- Team queries  : Category | Matches | Runs | Run Rate | Wickets
+- Phase queries : Phase | Balls | Runs | SR/Economy | Wickets | Dot%
+Include ALL meaningful columns — do not truncate data.
 
-### 🔍 Analysis
+### 🔍 Deep Analysis
 
 **Overall Performance**
-High-level summary with exact figures. Classify using tier labels.
-For time queries: describe the overall trajectory across years.
+1-2 paragraph summary with exact figures. Apply tier labels (Elite / Good / Average / Below Par).
+State clearly what the numbers mean in cricket context.
 
 **Strengths**
-Specific stats backing every claim. Cricket-specific language.
-For time queries: identify the strongest period and why.
+Specific stats backing every claim. Use cricket language (e.g. "exceptional powerplay aggression",
+"death-over yorker accuracy"). Reference exact numbers.
 
 **Weaknesses / Vulnerabilities**
-Reference exact numbers. For time queries: weakest period.
+Reference exact numbers. What is the entity's Achilles heel? What would opposition target?
 
-**Year-by-Year Trend** (include ONLY if time-based data present)
-Describe the progression year by year. Identify peaks, troughs, and inflection points.
-Mention specific year comparisons: "2022 was their best year with X runs at SR of Y"
+{'''**Year-by-Year Trend**
+Describe progression year by year. Identify peaks, troughs, inflection points.
+Use format: "In **YEAR**, [entity] scored X runs at SR of Y — their [best/worst] year."''' if is_time_query else ''}
+
+{'''**Phase Breakdown**
+Analyse each phase separately. Classify each phase. State tactical implications.''' if is_phase_query else ''}
+
+{'''**Head-to-Head Comparison**
+Direct comparison on every key metric. State who leads on what. Overall winner.''' if is_comparison else ''}
+
+{'''**Opponent Split**
+Best and worst opponents. Tactical pattern from the data.''' if is_opponent_query else ''}
 
 **Tactical Insights**
-Phase-wise, bowling angle, keeper position, scoring zones.
-Only from data that exists.
-
-**Context & Comparisons** (if multiple entities)
-Compare directly. What separates top from rest?
+Phase-wise patterns, bowling angle, keeper position, scoring zones — only from available data.
+What should an opposition captain know? What should the entity's coach focus on?
 
 ### 📈 Standout Moments / Records
-2-4 bullet points. For time queries include best/worst year stat.
+3-5 bullet points highlighting the most impressive or concerning data points.
+{'''Include best-year and worst-year statistics.''' if is_time_query else ''}
+Use format: **Bold the key fact**, then explain significance.
 
 ### 💡 Verdict
-3-5 sentence expert panel verdict.
-For time queries: is the team/player on an upward or downward trajectory?
+4-6 sentences. Expert-panel quality. Classify overall performance tier.
+{'''State trajectory: is the entity on an upward or downward arc?''' if is_time_query else ''}
+{'''State who is better and why.''' if is_comparison else ''}
+What would you tell the team management or opposition strategist?
 
 ---
 
-STRICT RULES
-- Cite exact numbers always (SR of 187.4, economy of 6.23, year 2023)
-- Cricket terminology naturally
+STRICT RULES:
+- Always cite exact numbers: "SR of 187.4", "economy of 6.23", "dismissed 7 times by Caught"
+- Use cricket terminology naturally: wagon wheel, hard length, wide yorker, knuckleball, etc.
 - Markdown tables with | pipes and --- separators
-- Bold key names: **Name**, bold years: **2023**
-- Multiple entities: compare explicitly not in isolation
-- Phase-wise data: dedicate paragraph
-- Classify metrics against benchmark tiers
-- Empty data: acknowledge gracefully
-- Under 700 words unless data demands more
-- Never mention SQL, database, queries
-- Never fabricate stats
-- No filler phrases like it is worth noting
+- Bold key entities: **Rohit Sharma**, **2023**, **Powerplay**
+- Never mention SQL, database, tables, queries, or data structures
+- Never fabricate stats not in the data
+- No filler phrases: "it is worth noting", "interestingly", "it can be seen that"
+- Be direct and specific — this is professional cricket analysis
+- Word count: 600-1000 words, more if data richness demands it
+- Empty or missing data: acknowledge gracefully and analyse what IS available
 """
 
     return llm(prompt)
 
 # =========================================================
-# GENERATE CHART CONFIG
+# GENERATE CHART CONFIG  (ENHANCED)
 # =========================================================
 
 def generate_chart_config(question, query_results):
 
-    compact_data = json.dumps(query_results, default=str)[:8000]
+    compact_data = json.dumps(query_results, default=str)[:10000]
 
-    # Detect time dimension for chart type hints
-    time_keywords = ["year", "season", "annual", "trend", "every", "each year",
-                     "monthly", "over time", "progression", "history"]
-    is_time_query = any(kw in question.lower() for kw in time_keywords)
+    # Detect dimensions
+    time_keywords    = ["year", "season", "annual", "trend", "every", "each year",
+                        "monthly", "over time", "progression", "history"]
+    phase_keywords   = ["powerplay", "pp", "middle", "death", "slog", "phase"]
+    compare_keywords = ["vs", "versus", "compare", "comparison", "both"]
+
+    is_time_query  = any(kw in question.lower() for kw in time_keywords)
+    is_phase_query = any(kw in question.lower() for kw in phase_keywords)
+    is_comparison  = any(kw in question.lower() for kw in compare_keywords)
 
     time_chart_hint = ""
     if is_time_query:
         time_chart_hint = """
 TIME QUERY DETECTED:
-- If data has a 'year' column with multiple years -> prefer 'line' or 'area'
-- line: for single metric trends over years (e.g. SR by year)
-- area: for volume/cumulative trends (e.g. total runs by year)
-- bar: for year-by-year comparison of multiple metrics side by side
-- x_key should be 'year'
-- y_keys should be numeric performance columns (runs, strike_rate, average, etc.)
+- Data has a 'year' column with multiple years → prefer 'line' or 'bar'
+- line : single metric trend over years (e.g. SR by year)
+- area : cumulative/volume metric over years (e.g. total runs by year)
+- bar  : multiple metrics per year side-by-side
+- x_key = 'year', y_keys = numeric performance columns
+"""
+
+    phase_chart_hint = ""
+    if is_phase_query:
+        phase_chart_hint = """
+PHASE QUERY DETECTED:
+- Data has phase categories (Powerplay / Middle / Death) → prefer 'bar' or 'radar'
+- bar   : compare 2-3 metrics across phases
+- radar : multi-metric profile across phases (if 3+ metrics for same entity)
+- x_key = 'phase', y_keys = numeric metric columns
+"""
+
+    compare_chart_hint = ""
+    if is_comparison:
+        compare_chart_hint = """
+COMPARISON QUERY DETECTED:
+- Multiple entities being compared → prefer 'bar' (grouped) or 'radar'
+- bar   : 2+ metrics across 2-5 players/teams
+- radar : multi-metric profile overlay for 2-4 players (4-6 metrics)
+- x_key = player/team name column, y_keys = metrics
 """
 
     prompt = f"""
-You are a cricket data visualization expert.
-
-Decide which chart type best communicates the insight.
-If no chart adds value return null.
+You are a cricket data visualization expert. Choose the chart type that best communicates
+the primary insight. If no chart adds meaningful value, return null.
 
 {time_chart_hint}
+{phase_chart_hint}
+{compare_chart_hint}
 
-CHART TYPE GUIDE
+CHART TYPE GUIDE:
 
 bar
-  WHEN: Side-by-side multi-metric comparison across players/teams/phases/years
-  REQUIRES: Multiple y_keys, categorical x_axis
-  MAX ROWS: 10
+  WHEN: Multi-metric comparison across players/teams/phases/years (2+ y_keys)
+  REQUIRES: Multiple y_keys, categorical or year x_axis
+  MAX ROWS: 12
 
 bar_colored
-  WHEN: Single metric leaderboard — each entry a unique color
+  WHEN: Single-metric leaderboard — each bar a unique entity/color
   REQUIRES: Exactly 1 y_key
   MAX ROWS: 15
 
 line
-  WHEN: Trends over time, year-by-year progression, over-by-over
-  REQUIRES: Ordered x_axis (year, over_number, match sequence)
+  WHEN: Trends over time, year-by-year progression, over-by-over run rates
+  REQUIRES: Ordered x_axis (year, over_number)
   MAX ROWS: 25
 
 area
-  WHEN: Volume or cumulative trends over time
+  WHEN: Cumulative or volume trends over time (total runs, innings count)
   REQUIRES: Ordered x_axis
   MAX ROWS: 25
 
 pie
-  WHEN: Distribution or share of a whole (dismissal types, run breakdown)
-  REQUIRES: 1 y_key, categorical x_key
+  WHEN: Distribution or share of a whole (dismissal type %, boundary %)
+  REQUIRES: Exactly 1 y_key, 3-8 categories
   MAX ROWS: 8
 
 radar
-  WHEN: Multi-dimension profile of 2-4 players across 4-6 metrics
-  REQUIRES: Multiple y_keys, 2-4 rows
+  WHEN: Multi-dimension profile — compare 2-4 players across 4-6 metrics
+  REQUIRES: 2-4 rows (players/teams), 4-6 y_keys
   MAX ROWS: 4
 
-SELECTION RULES
-1. year/time data with trend             -> line or area
-2. year/time data multiple metrics       -> bar (grouped by year)
-3. distribution/breakdown/share          -> pie
-4. compare/vs/top N + ONE metric         -> bar_colored
-5. compare/vs/top N + MULTIPLE metrics   -> bar
-6. player profile multi-dimension        -> radar
-7. 1 row only                            -> null
-8. no numeric columns                    -> null
-9. single stat lookup                    -> null
+SELECTION PRIORITY:
+1. Year/time data with 1 metric trend               → line
+2. Year/time data with 2+ metrics                   → bar (grouped by year)
+3. Year/time cumulative volume                      → area
+4. Distribution / breakdown / share of whole        → pie
+5. Compare top-N entities on ONE metric             → bar_colored
+6. Compare top-N entities on MULTIPLE metrics       → bar (grouped)
+7. Multi-dimension player profile (4-6 metrics)     → radar
+8. Phase breakdown (Powerplay/Middle/Death)         → bar
+9. Only 1 data row                                  → null
+10. No numeric columns                              → null
+11. Single stat lookup                              → null
 
-DATA RULES
-1. x_key must be STRING or year (integer)
-2. y_keys must be NUMERIC only
-3. All values actual numbers not strings
-4. Floats rounded to 2 decimal places
-5. For year data: x_key = 'year', values are integers like 2021, 2022, 2023
-6. title short and specific
-7. subtitle optional one-line context
+DATA PREPARATION RULES:
+1. x_key must map to a STRING, category, or integer year column
+2. y_keys must be NUMERIC only — exclude counts if they'd dwarf other metrics
+3. All values must be actual numbers, not strings
+4. Floats already rounded to 2 decimal places
+5. For year data: x_key = 'year', values are integers (2021, 2022...)
+6. For phase data: x_key = 'phase', values are strings ('Powerplay', 'Middle', 'Death')
+7. Limit data array to the first/most relevant query result when multiple queries exist
+8. title: short and specific (include entity name)
+9. subtitle: one-line context (optional)
 
-RETURN FORMAT
+RETURN FORMAT (strict JSON):
 {{
   "chart_type": "bar | bar_colored | line | area | pie | radar",
-  "title": "Short descriptive title",
-  "subtitle": "Optional one-line context",
-  "x_key": "year or category column",
+  "title": "Short descriptive title including entity name",
+  "subtitle": "Optional one-line context string",
+  "x_key": "column_name_for_x_axis",
   "y_keys": ["metric1", "metric2"],
   "data": [
     {{ "year": 2021, "runs": 450, "strike_rate": 124.5 }},
@@ -1125,12 +1492,12 @@ RETURN FORMAT
 }}
 
 If no chart adds value return exactly: null
-No markdown. No explanation. Only JSON or null.
+No markdown. No explanation. No preamble. Only valid JSON or the word null.
 
-USER QUESTION
+USER QUESTION:
 {question}
 
-DATABASE RESULTS
+DATABASE RESULTS:
 {compact_data}
 """
 
@@ -1138,6 +1505,11 @@ DATABASE RESULTS
 
     if raw.lower() == "null":
         return None
+
+    # Robust JSON extraction
+    json_match = re.search(r'\{[\s\S]*\}', raw)
+    if json_match:
+        raw = json_match.group(0)
 
     try:
         return json.loads(raw)
@@ -1150,7 +1522,6 @@ DATABASE RESULTS
 
 @app.post("/generate-sql")
 def generate_sql(req: QueryRequest):
-
     try:
         return {
             "question":   req.question,
@@ -1165,7 +1536,6 @@ def generate_sql(req: QueryRequest):
 
 @app.post("/ask")
 def ask_question(req: QueryRequest):
-
     try:
 
         # Step 1 — Generate SQL query plan
@@ -1199,15 +1569,17 @@ def ask_question(req: QueryRequest):
 
         # Step 6 — Return full response
         return {
-            "question":           req.question,
-            "analysis_type":      query_plan.get("analysis_type", "single"),
-            "has_time_dimension": query_plan.get("has_time_dimension", False),
-            "thresholds_relaxed": thresholds_relaxed,
-            "sql_queries":        sql_queries,
-            "results":            query_results,
-            "tables":             tables,
-            "chart_config":       chart_config,
-            "insight":            insight
+            "question":            req.question,
+            "analysis_type":       query_plan.get("analysis_type", "single"),
+            "has_time_dimension":  query_plan.get("has_time_dimension", False),
+            "has_phase_dimension": query_plan.get("has_phase_dimension", False),
+            "has_comparison":      query_plan.get("has_comparison", False),
+            "thresholds_relaxed":  thresholds_relaxed,
+            "sql_queries":         sql_queries,
+            "results":             query_results,
+            "tables":              tables,
+            "chart_config":        chart_config,
+            "insight":             insight
         }
 
     except Exception as e:
