@@ -54,11 +54,23 @@ app.add_middleware(
 # =========================================================
 # DATABASE CONNECTION
 # =========================================================
-
+'''
 def get_db_connection():
     return psycopg2.connect(
         host="/cloudsql/sportsanalytics-495612:europe-west2:sportsdb",
         database=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        connect_timeout=10
+    )
+'''
+
+def get_db_connection():
+    print("Connecting to Cloud SQL...")
+
+    return psycopg2.connect(
+        host="/cloudsql/sportsanalytics-495612:europe-west2:sportsdb",
+        dbname=os.getenv("DB_NAME"),
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         connect_timeout=10
@@ -690,6 +702,15 @@ def health_check():
         return {"status": "ok", "database": "connected"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+    
+
+@app.get("/debug")
+def debug():
+    return {
+        "DB_HOST": os.getenv("DB_HOST"),
+        "DB_NAME": os.getenv("DB_NAME"),
+        "DB_USER": os.getenv("DB_USER")
+    }
 
 # =========================================================
 # GEMINI TEST
