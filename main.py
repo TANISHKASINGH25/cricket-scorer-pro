@@ -699,9 +699,21 @@ def health_check():
     try:
         conn = get_db_connection()
         conn.close()
-        return {"status": "ok", "database": "connected"}
+
+        return {
+            "status": "ok",
+            "database": "connected"
+        }
+
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        import traceback
+
+        return {
+            "status": "error",
+            "error_type": str(type(e)),
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }
     
 
 @app.get("/debug")
