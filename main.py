@@ -23,7 +23,7 @@ from cricket_rules import CRICKET_RULES
 load_dotenv()
 
 # =========================================================
-# VERTEX AI SETUP
+# VERTEX AI SETUP  (unchanged — do not modify)
 # =========================================================
 
 vertexai.init(
@@ -71,14 +71,95 @@ def get_db_connection():
 
 class QueryRequest(BaseModel):
     question: str
+    session_context: list = []   # NEW: carries prior Q&A pairs for conversational memory
+
 
 # =========================================================
-# VERTEX LLM CALL
+# VERTEX LLM CALL  (unchanged — do not modify)
 # =========================================================
 
 def llm(prompt: str) -> str:
     response = model.generate_content(prompt)
     return response.text.strip()
+
+# =========================================================
+# INTENT CLASSIFICATION
+# Classifies the question across 18 orthogonal dimensions
+# before any SQL is generated so every downstream stage
+# can adapt its behaviour precisely.
+# =========================================================
+
+def classify_intent(question: str) -> dict:
+    q = question.lower()
+
+    # ── Primary subject ──────────────────────────────────
+    is_batting    = any(w in q for w in ["bat","runs","strike rate","average","century","fifty","boundary","four","six","scorer","openers","batting","innings","batter"])
+    is_bowling    = any(w in q for w in ["bowl","wicket","economy","dot ball","yorker","delivery","spin","pace","seam","swing","bowler","bowling"])
+    is_fielding   = any(w in q for w in ["catch","field","run out","direct hit","dropped","boundary save","fielder"])
+    is_team       = any(w in q for w in ["team","squad","side","xi","playing eleven","franchise"])
+    is_h2h        = any(w in q for w in ["head to head","h2h","matchup","batter vs bowler","vs bowler","vs batter"])
+    is_allrounder = any(w in q for w in ["all-rounder","allrounder","all rounder","both bat and bowl"])
+
+    # ── Analytical dimensions ─────────────────────────────
+    is_form        = any(w in q for w in ["recent","last ","form","current form","in form","last 5","last 10","last 10 matches","this year","this season","current"])
+    is_trend       = any(w in q for w in ["year","season","annual","trend","every year","each year","monthly","over time","progression","history","since","before","2021","2022","2023","2024","2025"])
+    is_phase       = any(w in q for w in ["powerplay","pp ","middle over","death over","slog","phase","over 1","over 6","over 16","over 20","first 6","last 5 overs","overs 1","overs 16"])
+    is_comparison  = any(w in q for w in [" vs "," versus ","compare","comparison","between","better","worse","who is better","which team","both","two players","two teams"])
+    is_opponent    = any(w in q for w in ["against ","opponent","facing","when bowling to","when batting against","matchup","bogey","favourite opponent"])
+    is_consistency = any(w in q for w in ["consistent","consistency","reliable","duck","fifty","century","milestone","how often","score distribution"])
+    is_chase       = any(w in q for w in ["chase","chasing","run chase","target","second innings","batting second","defending","first innings","batting first","setting"])
+    is_pressure    = any(w in q for w in ["pressure","clutch","crunch","crucial","eliminate","final","knockout","must win"])
+    is_leaderboard = any(w in q for w in ["top","best","highest","most","ranking","rank","leaderboard","who has most","who scored most","who took most"])
+    is_milestone   = any(w in q for w in ["century","centuries","hundred","50s","fifties","duck","golden duck","hat-trick","five-for","5 wickets","ten wickets","milestone"])
+    is_over_by_over= any(w in q for w in ["over by over","each over","per over","over number","which over","best over"])
+    is_venue       = any(w in q for w in ["venue","ground","stadium","pitch","home","away"])
+    is_fantasy     = any(w in q for w in ["fantasy","dream11","dream 11","pick","differential","captain","vice captain","points"])
+    is_predictive  = any(w in q for w in ["predict","likely","probability","expect","forecast","will","chances","should i pick"])
+
+    # ── Format detection ──────────────────────────────────
+    fmt_t20  = any(w in q for w in ["t20","t-20","ipl","bbl","psl","cpl","sa20","hundred","the hundred"])
+    fmt_odi  = any(w in q for w in ["odi","one day","one-day","50 over","50-over","list a","world cup odi"])
+    fmt_test = any(w in q for w in ["test","red ball","test match","test cricket","test series"])
+
+    # ── Entity extraction helpers ─────────────────────────
+    def extract_player_names(text):
+        """Heuristic: capitalised multi-word tokens not matching known keywords."""
+        keywords = {"how","what","when","which","who","where","best","top","most","has","does",
+                    "in","at","against","for","is","are","was","were","with","from","by","of","the","a","an"}
+        tokens = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', text)
+        return [t for t in tokens if t.lower() not in keywords]
+
+    return {
+        # Subject
+        "is_batting":     is_batting,
+        "is_bowling":     is_bowling,
+        "is_fielding":    is_fielding,
+        "is_team":        is_team,
+        "is_h2h":         is_h2h,
+        "is_allrounder":  is_allrounder,
+        # Analytical
+        "is_form":        is_form,
+        "is_trend":       is_trend,
+        "is_phase":       is_phase,
+        "is_comparison":  is_comparison,
+        "is_opponent":    is_opponent,
+        "is_consistency": is_consistency,
+        "is_chase":       is_chase,
+        "is_pressure":    is_pressure,
+        "is_leaderboard": is_leaderboard,
+        "is_milestone":   is_milestone,
+        "is_over_by_over":is_over_by_over,
+        "is_venue":       is_venue,
+        "is_fantasy":     is_fantasy,
+        "is_predictive":  is_predictive,
+        # Format
+        "fmt_t20":  fmt_t20,
+        "fmt_odi":  fmt_odi,
+        "fmt_test": fmt_test,
+        # Entities
+        "candidate_names": extract_player_names(question),
+    }
+
 
 # =========================================================
 # BUILD SCHEMA CONTEXT
@@ -98,6 +179,7 @@ def build_schema_context(question=""):
         schema_lines.append(line)
     return "\n".join(schema_lines)
 
+
 # =========================================================
 # BUILD METRICS CONTEXT
 # =========================================================
@@ -114,6 +196,7 @@ def build_metrics_context():
         )
         metric_lines.append(line)
     return "\n".join(metric_lines)
+
 
 # =========================================================
 # BUILD RULES CONTEXT
@@ -226,6 +309,7 @@ def build_rules_context():
 
     return "\n".join(lines)
 
+
 # =========================================================
 # BUILD INSIGHT RULES CONTEXT
 # =========================================================
@@ -314,6 +398,7 @@ def build_insight_rules_context():
 
     return "\n".join(lines)
 
+
 # =========================================================
 # CRICKET TERMINOLOGY DICTIONARY
 # =========================================================
@@ -396,9 +481,9 @@ def build_cricket_terms_context():
 
     return "\n".join(lines)
 
+
 # =========================================================
-# DATE / TIME CONTEXT  — ENHANCED
-# Handles timestamps, relative windows, intervals, seasons
+# DATE / TIME CONTEXT
 # =========================================================
 
 def build_date_context():
@@ -503,6 +588,7 @@ def build_date_context():
 
     return "\n".join(lines)
 
+
 # =========================================================
 # BUILD FORMAT CONTEXT
 # =========================================================
@@ -537,6 +623,7 @@ def build_format_context():
     lines.append("  Big Bash       -> competition ILIKE '%Big Bash%'")
 
     return "\n".join(lines)
+
 
 # =========================================================
 # BUILD ADVANCED QUERY PATTERNS CONTEXT
@@ -765,10 +852,66 @@ def build_advanced_patterns_context():
   ORDER BY batting_position
 """)
 
+    lines.append("13. FANTASY CRICKET — VALUE PLAYERS:")
+    lines.append("""
+  -- Top 20 all-format value players in last 30 days
+  SELECT
+    batter                                                                          AS player,
+    COUNT(DISTINCT match_id)                                                        AS matches,
+    SUM(runs_batter)                                                                AS runs,
+    COUNT(*) FILTER (WHERE runs_batter = 4)                                         AS fours,
+    COUNT(*) FILTER (WHERE runs_batter = 6)                                         AS sixes,
+    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(DISTINCT match_id),0), 2)        AS avg_runs_per_match,
+    -- approximate fantasy points: runs + 4s*1 + 6s*2
+    (SUM(runs_batter) + COUNT(*) FILTER (WHERE runs_batter=4) + COUNT(*) FILTER (WHERE runs_batter=6)*2) AS approx_fantasy_pts
+  FROM public.nv_play
+  WHERE match_date >= CURRENT_DATE - INTERVAL '30 days'
+  GROUP BY batter
+  HAVING COUNT(DISTINCT match_id) >= 3
+  ORDER BY approx_fantasy_pts DESC
+  LIMIT 20
+""")
+
+    lines.append("14. VENUE / GROUND SPLIT:")
+    lines.append("""
+  SELECT
+    venue,
+    COUNT(DISTINCT match_id)                                                        AS matches,
+    SUM(runs_batter)                                                                AS runs,
+    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average
+  FROM public.nv_play
+  WHERE batter ILIKE '%name%'
+  GROUP BY venue
+  ORDER BY runs DESC
+""")
+
+    lines.append("15. MILESTONE COUNTING:")
+    lines.append("""
+  SELECT
+    EXTRACT(YEAR FROM match_date)::int AS year,
+    COUNT(*) FILTER (WHERE innings_runs >= 100)  AS centuries,
+    COUNT(*) FILTER (WHERE innings_runs >= 50 AND innings_runs < 100) AS fifties,
+    COUNT(*) FILTER (WHERE innings_runs = 0)     AS ducks,
+    COUNT(*)                                     AS innings
+  FROM (
+    SELECT match_id, innings_number, batter,
+           match_date,
+           SUM(runs_batter) AS innings_runs
+    FROM public.nv_play
+    WHERE batter ILIKE '%name%'
+    GROUP BY match_id, innings_number, batter, match_date
+  ) t
+  GROUP BY EXTRACT(YEAR FROM match_date)
+  ORDER BY year
+""")
+
     return "\n".join(lines)
 
+
 # =========================================================
-# BUILD BASELINE QUERIES HINT  (NEW)
+# BUILD BASELINE QUERIES HINT
 # =========================================================
 
 def build_baseline_queries_hint():
@@ -803,15 +946,20 @@ def build_baseline_queries_hint():
     lines.append("  Q1 main_leaderboard    : Ranked list with HAVING thresholds, top 15-20")
     lines.append("  Q2 phase_leaders       : Same metric split by phase")
     lines.append("")
+    lines.append("For FANTASY questions:")
+    lines.append("  Q1 recent_form         : Last 30 days batting + bowling")
+    lines.append("  Q2 venue_split         : Performance at specific venue if given")
+    lines.append("  Q3 h2h_matchup         : Key matchup data for captain/vice-captain picks")
+    lines.append("")
     lines.append("RATIONALE: Career baseline is the comparison anchor that makes form/phase/opponent")
     lines.append("data meaningful. Without it, the insight layer cannot assess deviation from normal.")
     lines.append("Always include MORE context than strictly requested — insight layer will synthesise.")
 
     return "\n".join(lines)
 
+
 # =========================================================
-# BUILD SYSTEMIC CRICKET KNOWLEDGE  (NEW)
-# Deep cricket intelligence for insight blending
+# BUILD SYSTEMIC CRICKET KNOWLEDGE
 # =========================================================
 
 def build_systemic_cricket_knowledge():
@@ -899,8 +1047,36 @@ def build_systemic_cricket_knowledge():
     lines.append("OPPONENT QUALITY:")
     lines.append("  Performing against strong bowling attacks is harder. A high SR against a weak team")
     lines.append("  may reflect opposition quality rather than individual brilliance. Always contextualise.")
+    lines.append("")
+
+    lines.append("FANTASY CRICKET INTELLIGENCE:")
+    lines.append("  High-value captain picks: consistent performers at a venue + recent form + good matchup vs opposition bowlers.")
+    lines.append("  Differentials: overlooked middle-order batters or death bowlers with good venue records.")
+    lines.append("  Avoid: players in poor form even if high-profile. Venue batting/bowling average is critical.")
+    lines.append("  Bowling picks: target bowlers with high dot% + economy <8.0 in current conditions.")
 
     return "\n".join(lines)
+
+
+# =========================================================
+# CONVERSATIONAL CONTEXT BUILDER
+# Injects prior Q&A pairs so the LLM can resolve
+# indirect references ("same player", "how about ODIs",
+# "compare with Kohli") correctly.
+# =========================================================
+
+def build_session_context(session_context: list) -> str:
+    if not session_context:
+        return ""
+    lines = ["\nPREVIOUS CONVERSATION CONTEXT (use to resolve indirect references):"]
+    for i, turn in enumerate(session_context[-4:], 1):   # last 4 turns only
+        q = turn.get("question", "")
+        a = turn.get("summary", "")[:300]                # truncated answer summary
+        lines.append(f"  Turn {i}: Q: {q}")
+        if a:
+            lines.append(f"           A (summary): {a}")
+    return "\n".join(lines)
+
 
 # =========================================================
 # STRIP HAVING CLAUSES
@@ -921,6 +1097,7 @@ def results_are_empty(query_results):
         len(item.get("results", [])) == 0
         for item in query_results
     )
+
 
 # =========================================================
 # HEALTH CHECK
@@ -950,6 +1127,7 @@ def debug():
         "DB_USER": os.getenv("DB_USER")
     }
 
+
 # =========================================================
 # GEMINI TEST
 # =========================================================
@@ -957,6 +1135,7 @@ def debug():
 @app.get("/gemini-test")
 def gemini_test():
     return {"response": llm("Say hello from Cricket_Scorer_AI")}
+
 
 # =========================================================
 # CLEAN SQL  — ENHANCED
@@ -1024,6 +1203,7 @@ def clean_sql(sql_query):
 
     return sql_query.strip()
 
+
 # =========================================================
 # VALIDATE SQL
 # =========================================================
@@ -1040,11 +1220,14 @@ def validate_sql(sql_query):
         if keyword in upper_sql:
             raise Exception(f"{keyword} operation not allowed.")
 
+
 # =========================================================
 # GENERATE QUERY PLAN  — ENHANCED
+# Accepts intent dict + session context for higher accuracy
 # =========================================================
 
-def generate_query_plan(question, relax_thresholds=False):
+def generate_query_plan(question, relax_thresholds=False,
+                        intent: dict = None, session_context: list = None):
 
     schema_context    = build_schema_context(question)
     metrics_context   = build_metrics_context()
@@ -1054,6 +1237,15 @@ def generate_query_plan(question, relax_thresholds=False):
     format_context    = build_format_context()
     advanced_patterns = build_advanced_patterns_context()
     baseline_hint     = build_baseline_queries_hint()
+    session_ctx       = build_session_context(session_context or [])
+
+    # Build intent hint from classification
+    intent_hint = ""
+    if intent:
+        flags = [k for k, v in intent.items() if v is True]
+        intent_hint = f"\nDETECTED INTENT FLAGS: {', '.join(flags)}\n"
+        if intent.get("candidate_names"):
+            intent_hint += f"CANDIDATE ENTITY NAMES: {', '.join(intent['candidate_names'])}\n"
 
     threshold_note = ""
     if relax_thresholds:
@@ -1075,6 +1267,9 @@ even if not explicitly asked for. Think like a coaching analyst building a compr
 not just answering the narrow question.
 
 {threshold_note}
+
+{intent_hint}
+{session_ctx}
 
 DATABASE:
   Table : public.nv_play
@@ -1138,6 +1333,8 @@ MULTI-QUERY STRATEGY:
   H2H                       -> Q1 h2h_summary + Q2 batter_career + Q3 bowler_career + Q4 h2h_phase
   Leaderboard               -> Q1 main_leaderboard + Q2 phase_leaders
   Consistency/milestones    -> Q1 career_baseline + Q2 innings_distribution + Q3 dismissal_breakdown
+  Fantasy                   -> Q1 recent_form_batting + Q2 recent_form_bowling + Q3 venue_split
+  Predictive/analysis       -> Q1 career_baseline + Q2 opponent_split + Q3 phase_split + Q4 recent_form
 
 ANALYSIS TYPE -> QUERY STRATEGY:
   CAREER BATTING    -> career_baseline + phase_split + dismissal_breakdown + yearly_trend
@@ -1156,6 +1353,8 @@ ANALYSIS TYPE -> QUERY STRATEGY:
   CHASE vs SETTING  -> innings_split + career_baseline
   MILESTONES        -> milestone_counts + career_baseline + yearly_milestones
   OVER ANALYSIS     -> over_by_over + phase_context
+  FANTASY           -> recent_form_batting + recent_form_bowling + venue_split
+  PREDICTIVE        -> career_baseline + form + matchup + phase_analysis
 
 OUTPUT FORMAT — STRICT JSON ONLY, NO PREAMBLE, NO MARKDOWN:
 
@@ -1166,6 +1365,8 @@ OUTPUT FORMAT — STRICT JSON ONLY, NO PREAMBLE, NO MARKDOWN:
   "has_phase_dimension": true | false,
   "has_comparison": true | false,
   "has_recent_form": true | false,
+  "has_fantasy_dimension": true | false,
+  "has_predictive_dimension": true | false,
   "threshold_applied": true | false,
   "queries": [
     {{
@@ -1189,12 +1390,14 @@ USER QUESTION:
         return json.loads(raw)
     except Exception:
         return {
-            "analysis_type":     "single",
-            "has_time_dimension": False,
-            "has_phase_dimension": False,
-            "has_comparison":    False,
-            "has_recent_form":   False,
-            "threshold_applied": False,
+            "analysis_type":          "single",
+            "has_time_dimension":      False,
+            "has_phase_dimension":     False,
+            "has_comparison":          False,
+            "has_recent_form":         False,
+            "has_fantasy_dimension":   False,
+            "has_predictive_dimension":False,
+            "threshold_applied":       False,
             "queries": [
                 {
                     "name":    "fallback_query",
@@ -1203,6 +1406,7 @@ USER QUESTION:
                 }
             ]
         }
+
 
 # =========================================================
 # FALLBACK SQL
@@ -1238,6 +1442,7 @@ QUESTION: {question}
         sql_query += ";"
     return sql_query
 
+
 # =========================================================
 # EXECUTE SQL
 # =========================================================
@@ -1260,6 +1465,7 @@ def execute_sql(sql_query):
     cursor.close()
     conn.close()
     return results
+
 
 # =========================================================
 # EXECUTE QUERY PLAN
@@ -1291,14 +1497,18 @@ def execute_query_plan(query_plan):
             })
     return all_results, all_sql
 
+
 # =========================================================
 # EXECUTE QUERY PLAN WITH RETRY
 # =========================================================
 
-def execute_query_plan_with_retry(query_plan, question):
+def execute_query_plan_with_retry(query_plan, question,
+                                   intent: dict = None,
+                                   session_context: list = None):
     all_results, all_sql = execute_query_plan(query_plan)
 
     if results_are_empty(all_results):
+        # Attempt 1: Strip HAVING clauses
         retry_plan = {
             "analysis_type": query_plan.get("analysis_type", "single"),
             "queries": []
@@ -1313,13 +1523,20 @@ def execute_query_plan_with_retry(query_plan, question):
         retry_results, retry_sql = execute_query_plan(retry_plan)
 
         if results_are_empty(retry_results):
-            fresh_plan = generate_query_plan(question, relax_thresholds=True)
+            # Attempt 2: Full LLM retry with broad patterns
+            fresh_plan = generate_query_plan(
+                question,
+                relax_thresholds=True,
+                intent=intent,
+                session_context=session_context
+            )
             fresh_results, fresh_sql = execute_query_plan(fresh_plan)
             return fresh_results, fresh_sql, True
 
         return retry_results, retry_sql, True
 
     return all_results, all_sql, False
+
 
 # =========================================================
 # FORMAT RESULTS
@@ -1336,16 +1553,22 @@ def format_results(results):
         table.append(" | ".join(str(v) for v in row.values()))
     return "\n".join(table)
 
+
 # =========================================================
 # GENERATE CRICKET INSIGHT  — ENHANCED
+# Full Gemini-grade reasoning with intent-aware depth
 # =========================================================
 
-def generate_cricket_insight(question, query_results, small_sample=False):
+def generate_cricket_insight(question, query_results,
+                              small_sample=False,
+                              intent: dict = None,
+                              session_context: list = None):
 
-    compact_data          = json.dumps(query_results, default=str)[:16000]
+    compact_data          = json.dumps(query_results, default=str)[:18000]
     insight_rules_context = build_insight_rules_context()
     format_context        = build_format_context()
     systemic_knowledge    = build_systemic_cricket_knowledge()
+    session_ctx           = build_session_context(session_context or [])
 
     small_sample_note = ""
     if small_sample:
@@ -1355,17 +1578,25 @@ the analysis (e.g. "across limited appearances", "small sample caveat"). Do NOT 
 to analyse. Still classify against benchmarks and deliver a full verdict.
 """
 
-    q = question.lower()
+    # Use pre-classified intent if provided, else do keyword check
+    if intent is None:
+        intent = classify_intent(question)
 
-    is_time_query     = any(kw in q for kw in ["year","season","annual","trend","every","each year","monthly","over time","progression","2021","2022","2023","2024","2025","recent","latest","history","since","before","last year"])
-    is_phase_query    = any(kw in q for kw in ["powerplay","pp ","middle over","death over","slog","phase","over 1","over 6","over 16","over 20","first 6","last 5"])
-    is_comparison     = any(kw in q for kw in [" vs ","versus","compare","comparison","between","better","worse","who is","which team","both","two players","two teams"])
-    is_form_query     = any(kw in q for kw in ["recent","last ","form","current form","in form","last 5","last 10","this year","this season"])
-    is_opponent_query = any(kw in q for kw in ["against ","opponent","facing","bowled by","when playing","matchup","bogey"])
-    is_consistency    = any(kw in q for kw in ["consistent","consistency","reliable","duck","fifty","century","milestone","often score"])
-    is_h2h            = any(kw in q for kw in ["head to head","h2h","matchup","batter vs bowler"])
-    is_pressure       = any(kw in q for kw in ["chase","chasing","pressure","clutch","run chase","defend","setting","death"])
-    is_allrounder     = any(kw in q for kw in ["all-rounder","allrounder","all rounder","both bat and bowl","batting and bowling"])
+    is_time_query     = intent.get("is_trend", False)
+    is_phase_query    = intent.get("is_phase", False)
+    is_comparison     = intent.get("is_comparison", False)
+    is_form_query     = intent.get("is_form", False)
+    is_opponent_query = intent.get("is_opponent", False)
+    is_consistency    = intent.get("is_consistency", False)
+    is_h2h            = intent.get("is_h2h", False)
+    is_pressure       = intent.get("is_chase", False) or intent.get("is_pressure", False)
+    is_allrounder     = intent.get("is_allrounder", False)
+    is_leaderboard    = intent.get("is_leaderboard", False)
+    is_fantasy        = intent.get("is_fantasy", False)
+    is_predictive     = intent.get("is_predictive", False)
+    is_milestone      = intent.get("is_milestone", False)
+    is_over_by_over   = intent.get("is_over_by_over", False)
+    is_venue          = intent.get("is_venue", False)
 
     dimension_notes = ""
 
@@ -1417,6 +1648,39 @@ Reference required rate context. State if higher chasing performance = genuine c
 ALL-ROUNDER: Present batting AND bowling with equal weight. Apply all-rounder tier labels.
 Check against T20 thresholds (200 runs + 10 wickets). State if genuine dual value exists.
 """
+    if is_leaderboard:
+        dimension_notes += """
+LEADERBOARD: Rank top performers clearly. Highlight surprising entries, gaps between ranks.
+Note what separates #1 from #2. Identify the 'most underrated' player in the list.
+"""
+    if is_fantasy:
+        dimension_notes += """
+FANTASY CRICKET: Frame every insight around selection impact.
+Captain recommendation: highest floor + ceiling. Vice-captain: second-best risk/reward.
+Differentials: overlooked players with good matchup data. Bold recommendation required.
+State expected fantasy points range where data allows.
+"""
+    if is_predictive:
+        dimension_notes += """
+PREDICTIVE ANALYSIS: Ground predictions in career patterns, recent form, opponent matchup.
+State probability qualitatively (likely / possible / unlikely) and justify with data.
+Identify key risk factors. Avoid overclaiming — be calibrated.
+"""
+    if is_milestone:
+        dimension_notes += """
+MILESTONE TRACKING: Show year-by-year milestone counts (centuries, fifties, ducks).
+Highlight best milestone season, career totals, and conversion rates (50->100).
+"""
+    if is_over_by_over:
+        dimension_notes += """
+OVER-BY-OVER: Link run rate expectations to T20 benchmarks per over.
+Identify overs where performance significantly deviates from expected RPO.
+"""
+    if is_venue:
+        dimension_notes += """
+VENUE ANALYSIS: Rank venues by performance. Identify best and worst grounds.
+Note if home/away split exists. Link venue conditions to performance pattern.
+"""
 
     prompt = f"""
 You are Cricket_Scorer_AI — the world's most advanced cricket analytics engine, combining:
@@ -1430,6 +1694,7 @@ BLEND systemic cricket knowledge with data where it explains WHY patterns exist.
 NEVER fabricate statistics. NEVER mention SQL, database, queries, or data structures.
 
 {small_sample_note}
+{session_ctx}
 
 USER QUESTION: {question}
 
@@ -1461,6 +1726,7 @@ Markdown table. ALL data rows, no truncation.
 - Phase split:   Phase | Balls | Runs | SR/Economy | Wickets | Dot%
 - Comparison:    Metric | Entity A | Entity B (side-by-side)
 - Leaderboard:   Rank | Name | Matches | primary metric | secondary metrics
+- Fantasy:       Player | Form SR | Avg per match | Fours | Sixes | Approx Points | Selection Verdict
 
 ### 🔍 Deep Analysis
 
@@ -1483,6 +1749,8 @@ What does the captain set the field for? Exact stats.
 {"**Opponent Split** — best and worst opponents, bogey team/bowler identified, tactical pattern." if is_opponent_query else ""}
 {"**Consistency Profile** — score band distribution, duck rate, 30+ rate, boom-or-bust classifier." if is_consistency else ""}
 {"**Chase vs Setting** — side-by-side setting/chasing stats, clutch performer assessment." if is_pressure else ""}
+{"**Fantasy Recommendation** — captain pick, vice-captain, differentials, avoid list with reasoning." if is_fantasy else ""}
+{"**Predictive Outlook** — data-backed likelihood statements, key risk factors, selection recommendation." if is_predictive else ""}
 
 **Tactical Intelligence**
 What the opposition captain should plan for. What this team/player's coach should address.
@@ -1493,12 +1761,15 @@ Ground every suggestion in specific numbers from the data.
 4-6 bullets mixing impressive achievements AND concerning patterns.
 Format: **[Bold the key stat]** — [1-2 sentence explanation of significance]
 {"Include: best year, worst year, biggest year-on-year change." if is_time_query else ""}
+{"Include: fantasy captain rationale, differential pick justification." if is_fantasy else ""}
 
 ### 💡 Verdict
 5-7 sentences. Expert-panel quality. Open with tier classification.
 {"Trajectory: upward / declining / plateauing and why." if is_time_query else ""}
 {"Definitively state who is better and why." if is_comparison else ""}
 {"Is this a clutch performer or does pressure expose them?" if is_pressure else ""}
+{"Bold fantasy selection recommendation in final sentence." if is_fantasy else ""}
+{"State predictive confidence level and primary risk." if is_predictive else ""}
 Single most important finding. Forward-looking recommendation.
 
 ---
@@ -1518,21 +1789,28 @@ RULES:
 
     return llm(prompt)
 
+
 # =========================================================
 # GENERATE CHART CONFIG  — ENHANCED
+# Supports fantasy, milestone, over-by-over, venue types
 # =========================================================
 
-def generate_chart_config(question, query_results):
+def generate_chart_config(question, query_results, intent: dict = None):
 
     compact_data = json.dumps(query_results, default=str)[:10000]
-    q = question.lower()
 
-    is_time      = any(kw in q for kw in ["year","season","trend","every","monthly","over time","progression","history"])
-    is_phase     = any(kw in q for kw in ["powerplay","pp ","middle over","death over","slog","phase"])
-    is_compare   = any(kw in q for kw in [" vs ","versus","compare","comparison","both"])
-    is_over      = any(kw in q for kw in ["over by over","each over","per over","over number"])
-    is_dismissal = any(kw in q for kw in ["dismissal","how out","bowled","caught","lbw","wicket type"])
-    is_dist      = any(kw in q for kw in ["consistent","distribution","score band","duck","fifty","century"])
+    if intent is None:
+        intent = classify_intent(question)
+
+    is_time      = intent.get("is_trend", False)
+    is_phase     = intent.get("is_phase", False)
+    is_compare   = intent.get("is_comparison", False)
+    is_over      = intent.get("is_over_by_over", False)
+    is_dismissal = any(w in question.lower() for w in ["dismissal","how out","bowled","caught","lbw","wicket type"])
+    is_dist      = intent.get("is_consistency", False)
+    is_fantasy   = intent.get("is_fantasy", False)
+    is_milestone = intent.get("is_milestone", False)
+    is_venue     = intent.get("is_venue", False)
 
     hints = ""
     if is_time:
@@ -1547,6 +1825,12 @@ def generate_chart_config(question, query_results):
         hints += "DISMISSAL: types as categories -> 'pie' (pct) or 'bar_colored' (count)\n"
     if is_dist:
         hints += "DISTRIBUTION: score bands -> 'bar_colored'. x_key='score_band'\n"
+    if is_fantasy:
+        hints += "FANTASY: approx_fantasy_pts per player -> 'bar_colored'. x_key='player'\n"
+    if is_milestone:
+        hints += "MILESTONE: year + centuries + fifties stacked -> 'bar'. x_key='year'\n"
+    if is_venue:
+        hints += "VENUE: venue as x_key, runs or SR as y -> 'bar_colored'. x_key='venue'\n"
 
     prompt = f"""
 Cricket data visualisation expert. Select the chart type that best communicates the PRIMARY INSIGHT.
@@ -1573,8 +1857,11 @@ SELECTION PRIORITY:
 7. compare N entities on 1 metric           -> bar_colored
 8. compare N entities on 2+ metrics         -> bar
 9. profile 2-4 players on 4-6 metrics       -> radar
-10. only 1 data row                         -> null
-11. no numeric columns                      -> null
+10. fantasy points ranking                  -> bar_colored
+11. milestone year-by-year                  -> bar
+12. venue breakdown                         -> bar_colored
+13. only 1 data row                         -> null
+14. no numeric columns                      -> null
 
 DATA RULES:
 - x_key: string, category, or integer (year/over_number)
@@ -1613,6 +1900,57 @@ DATABASE RESULTS: {compact_data}
     except Exception:
         return None
 
+
+# =========================================================
+# GENERATE STRUCTURED INTENT SUMMARY
+# Returns a short human-readable interpretation of the
+# question so the frontend can display "Understanding: ..."
+# =========================================================
+
+def generate_intent_summary(question: str, intent: dict) -> str:
+    flags = []
+    mapping = {
+        "is_batting":     "Batting analysis",
+        "is_bowling":     "Bowling analysis",
+        "is_fielding":    "Fielding analysis",
+        "is_team":        "Team analysis",
+        "is_h2h":         "Head-to-head matchup",
+        "is_allrounder":  "All-rounder assessment",
+        "is_form":        "Recent form",
+        "is_trend":       "Year-by-year trend",
+        "is_phase":       "Phase breakdown (PP/Middle/Death)",
+        "is_comparison":  "Player/team comparison",
+        "is_opponent":    "Opponent-specific analysis",
+        "is_consistency": "Consistency & milestones",
+        "is_chase":       "Chase vs Setting analysis",
+        "is_pressure":    "Pressure/clutch performance",
+        "is_leaderboard": "Rankings/leaderboard",
+        "is_milestone":   "Career milestones",
+        "is_over_by_over":"Over-by-over breakdown",
+        "is_venue":       "Venue analysis",
+        "is_fantasy":     "Fantasy cricket recommendation",
+        "is_predictive":  "Predictive insight",
+    }
+    for k, label in mapping.items():
+        if intent.get(k):
+            flags.append(label)
+
+    fmt = []
+    if intent.get("fmt_t20"):  fmt.append("T20")
+    if intent.get("fmt_odi"):  fmt.append("ODI")
+    if intent.get("fmt_test"): fmt.append("Test")
+
+    parts = []
+    if flags:
+        parts.append(", ".join(flags))
+    if fmt:
+        parts.append(f"Format: {'/'.join(fmt)}")
+    if intent.get("candidate_names"):
+        parts.append(f"Entities: {', '.join(intent['candidate_names'])}")
+
+    return " | ".join(parts) if parts else "General cricket query"
+
+
 # =========================================================
 # GENERATE SQL ROUTE
 # =========================================================
@@ -1620,31 +1958,51 @@ DATABASE RESULTS: {compact_data}
 @app.post("/generate-sql")
 def generate_sql(req: QueryRequest):
     try:
+        intent = classify_intent(req.question)
         return {
-            "question":   req.question,
-            "query_plan": generate_query_plan(req.question)
+            "question":      req.question,
+            "intent_flags":  {k: v for k, v in intent.items() if v is True},
+            "intent_summary":generate_intent_summary(req.question, intent),
+            "query_plan":    generate_query_plan(
+                                req.question,
+                                intent=intent,
+                                session_context=req.session_context
+                             )
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
 # =========================================================
-# MAIN ASK ROUTE
+# MAIN ASK ROUTE  — ENHANCED
+# Full pipeline: classify → plan → execute → retry →
+#                chart → insight → respond
 # =========================================================
 
 @app.post("/ask")
 def ask_question(req: QueryRequest):
     try:
 
-        # Step 1 — Generate SQL query plan
-        query_plan = generate_query_plan(req.question)
+        # ── Step 0: Classify intent (once, reused everywhere) ──
+        intent = classify_intent(req.question)
+        intent_summary = generate_intent_summary(req.question, intent)
 
-        # Step 2 — Execute with auto-retry on empty results
-        query_results, sql_queries, thresholds_relaxed = execute_query_plan_with_retry(
-            query_plan,
-            req.question
+        # ── Step 1: Generate SQL query plan ──────────────────
+        query_plan = generate_query_plan(
+            req.question,
+            intent=intent,
+            session_context=req.session_context
         )
 
-        # Step 3 — Format plain-text tables
+        # ── Step 2: Execute with auto-retry on empty results ──
+        query_results, sql_queries, thresholds_relaxed = execute_query_plan_with_retry(
+            query_plan,
+            req.question,
+            intent=intent,
+            session_context=req.session_context
+        )
+
+        # ── Step 3: Format plain-text tables ─────────────────
         tables = [
             {
                 "query_name": item["query_name"],
@@ -1654,31 +2012,96 @@ def ask_question(req: QueryRequest):
             for item in query_results
         ]
 
-        # Step 4 — Generate chart config
-        chart_config = generate_chart_config(req.question, query_results)
+        # ── Step 4: Generate chart config ────────────────────
+        chart_config = generate_chart_config(
+            req.question,
+            query_results,
+            intent=intent
+        )
 
-        # Step 5 — Generate cricket insight
+        # ── Step 5: Generate cricket insight ─────────────────
         insight = generate_cricket_insight(
             req.question,
             query_results,
-            small_sample=thresholds_relaxed
+            small_sample=thresholds_relaxed,
+            intent=intent,
+            session_context=req.session_context
         )
 
-        # Step 6 — Return full response
+        # ── Step 6: Build response summary for session memory ─
+        insight_summary = insight[:400] if insight else ""
+
+        # ── Step 7: Return full response ─────────────────────
         return {
-            "question":            req.question,
-            "analysis_type":       query_plan.get("analysis_type",    "single"),
-            "has_time_dimension":  query_plan.get("has_time_dimension", False),
-            "has_phase_dimension": query_plan.get("has_phase_dimension", False),
-            "has_comparison":      query_plan.get("has_comparison",    False),
-            "has_recent_form":     query_plan.get("has_recent_form",   False),
-            "thresholds_relaxed":  thresholds_relaxed,
-            "sql_queries":         sql_queries,
-            "results":             query_results,
-            "tables":              tables,
-            "chart_config":        chart_config,
-            "insight":             insight
+            "question":              req.question,
+            "intent_summary":        intent_summary,
+            "intent_flags": {
+                "analysis_type":       query_plan.get("analysis_type",       "single"),
+                "has_time_dimension":  query_plan.get("has_time_dimension",  False),
+                "has_phase_dimension": query_plan.get("has_phase_dimension", False),
+                "has_comparison":      query_plan.get("has_comparison",      False),
+                "has_recent_form":     query_plan.get("has_recent_form",     False),
+                "has_fantasy":         query_plan.get("has_fantasy_dimension", False),
+                "has_predictive":      query_plan.get("has_predictive_dimension", False),
+            },
+            "thresholds_relaxed":    thresholds_relaxed,
+            "sql_queries":           sql_queries,
+            "results":               query_results,
+            "tables":                tables,
+            "chart_config":          chart_config,
+            "insight":               insight,
+            # Session memory helper — frontend should persist this
+            # and pass it back as session_context in the next request
+            "session_turn": {
+                "question": req.question,
+                "summary":  insight_summary
+            }
         }
 
+    except Exception as e:
+        import traceback
+        return {
+            "status":    "error",
+            "message":   str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
+# =========================================================
+# INTERPRET ROUTE
+# Pure NL interpretation without DB execution — for
+# explaining what the system understands about a question
+# =========================================================
+
+@app.post("/interpret")
+def interpret_question(req: QueryRequest):
+    """
+    Returns a structured interpretation of the user's question:
+    intent flags, entities, format, analysis type, and a
+    plain-English explanation — without running any SQL.
+    """
+    try:
+        intent  = classify_intent(req.question)
+        summary = generate_intent_summary(req.question, intent)
+
+        prompt = f"""
+You are Cricket_Scorer_AI. A user has asked: "{req.question}"
+
+Explain in 3-4 clear sentences:
+1. What cricket analysis this question is asking for
+2. Which players/teams/formats are involved
+3. What data dimensions will be analysed (phase, form, comparison, etc.)
+4. What the key insight will be
+
+Be specific. Use cricket domain language. No SQL, no database language.
+"""
+        explanation = llm(prompt)
+
+        return {
+            "question":        req.question,
+            "intent_summary":  summary,
+            "intent_flags":    {k: v for k, v in intent.items() if v is True},
+            "explanation":     explanation
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
