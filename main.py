@@ -223,33 +223,66 @@ def build_rules_context():
             f"  {phase}: overs {data['start_over']}-{data['end_over']} -- {data['description']}"
         )
 
-    lines.append("\nBATTING BENCHMARKS (T20 Strike Rate):")
+    lines.append("\nBATTING BENCHMARKS — apply the correct format based on match_type in the data:")
+    lines.append("\n  T20 Strike Rate:")
     for tier, data in rules["batting_benchmarks"]["T20"]["strike_rate"].items():
-        lines.append(f"  {tier}: {data}")
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Strike Rate:")
+    for tier, data in rules["batting_benchmarks"]["ODI"]["strike_rate"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  Test Batting Average:")
+    for tier, data in rules["batting_benchmarks"]["TEST"]["batting_average"].items():
+        lines.append(f"    {tier}: {data}")
 
-    lines.append("\nBATTING BENCHMARKS (T20 Powerplay SR):")
+    lines.append("\n  T20 Powerplay SR:")
     for tier, data in rules["batting_benchmarks"]["T20"]["powerplay_sr"].items():
-        lines.append(f"  {tier}: {data}")
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Powerplay SR:")
+    for tier, data in rules["batting_benchmarks"]["ODI"]["powerplay_sr"].items():
+        lines.append(f"    {tier}: {data}")
 
-    lines.append("\nBATTING BENCHMARKS (T20 Death SR):")
+    lines.append("\n  T20 Death SR:")
     for tier, data in rules["batting_benchmarks"]["T20"]["death_sr"].items():
-        lines.append(f"  {tier}: {data}")
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Death SR:")
+    for tier, data in rules["batting_benchmarks"]["ODI"]["death_sr"].items():
+        lines.append(f"    {tier}: {data}")
 
-    lines.append("\nBOWLING BENCHMARKS (T20 Economy):")
+    lines.append("\nBOWLING BENCHMARKS — apply the correct format based on match_type in the data:")
+    lines.append("\n  T20 Economy Rate:")
     for tier, data in rules["bowling_benchmarks"]["T20"]["economy_rate"].items():
-        lines.append(f"  {tier}: {data}")
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Economy Rate:")
+    for tier, data in rules["bowling_benchmarks"]["ODI"]["economy_rate"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  Test Economy Rate:")
+    for tier, data in rules["bowling_benchmarks"]["TEST"]["economy_rate"].items():
+        lines.append(f"    {tier}: {data}")
 
-    lines.append("\nBOWLING BENCHMARKS (T20 Powerplay Economy):")
+    lines.append("\n  T20 Powerplay Economy:")
     for tier, data in rules["bowling_benchmarks"]["T20"]["powerplay_economy"].items():
-        lines.append(f"  {tier}: {data}")
+        lines.append(f"    {tier}: {data}")
 
-    lines.append("\nBOWLING BENCHMARKS (T20 Death Economy):")
+    lines.append("\n  T20 Death Economy:")
     for tier, data in rules["bowling_benchmarks"]["T20"]["death_economy"].items():
-        lines.append(f"  {tier}: {data}")
+        lines.append(f"    {tier}: {data}")
 
-    lines.append("\nBOWLING BENCHMARKS (T20 Dot Ball %):")
+    lines.append("\n  T20 Dot Ball %:")
     for tier, data in rules["bowling_benchmarks"]["T20"]["dot_ball_percentage"].items():
-        lines.append(f"  {tier}: {data}")
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Dot Ball %:")
+    for tier, data in rules["bowling_benchmarks"]["ODI"]["dot_ball_percentage"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  Test Dot Ball %:")
+    for tier, data in rules["bowling_benchmarks"]["TEST"]["dot_ball_percentage"].items():
+        lines.append(f"    {tier}: {data}")
+
+    lines.append("\nFORMAT BENCHMARK SELECTION RULE FOR SQL PLANNER:")
+    lines.append("  T20 / T20I  -> use T20 benchmarks")
+    lines.append("  ODI         -> use ODI benchmarks")
+    lines.append("  Test        -> use TEST benchmarks")
+    lines.append("  Mixed       -> include all formats and benchmark each separately")
+    lines.append("  NEVER apply T20 benchmarks when the data covers ODI or Test matches")
 
     lines.append("\nDISMISSAL TYPES:")
     for dtype, meta in rules["dismissal_types"].items():
@@ -329,17 +362,31 @@ def build_insight_rules_context():
     for tier, label in rules["performance_labels"]["allround"].items():
         lines.append(f"    {tier}: {label}")
 
-    lines.append("\nBATTING BENCHMARKS (T20 — all metrics):")
-    for metric, tiers in rules["batting_benchmarks"]["T20"].items():
-        lines.append(f"  {metric}:")
-        for tier, data in tiers.items():
-            lines.append(f"    {tier}: {data}")
+    lines.append("\nBATTING BENCHMARKS (ALL FORMATS — apply the one matching the data's match_type):")
+    for fmt in ["T20", "ODI", "TEST"]:
+        if fmt in rules["batting_benchmarks"]:
+            lines.append(f"\n  [{fmt}]")
+            for metric, tiers in rules["batting_benchmarks"][fmt].items():
+                lines.append(f"  {metric}:")
+                for tier, data in tiers.items():
+                    lines.append(f"    {tier}: {data}")
 
-    lines.append("\nBOWLING BENCHMARKS (T20 — all metrics):")
-    for metric, tiers in rules["bowling_benchmarks"]["T20"].items():
-        lines.append(f"  {metric}:")
-        for tier, data in tiers.items():
-            lines.append(f"    {tier}: {data}")
+    lines.append("\nBOWLING BENCHMARKS (ALL FORMATS — apply the one matching the data's match_type):")
+    for fmt in ["T20", "ODI", "TEST"]:
+        if fmt in rules["bowling_benchmarks"]:
+            lines.append(f"\n  [{fmt}]")
+            for metric, tiers in rules["bowling_benchmarks"][fmt].items():
+                lines.append(f"  {metric}:")
+                for tier, data in tiers.items():
+                    lines.append(f"    {tier}: {data}")
+
+    lines.append("\nFORMAT BENCHMARK SELECTION RULE:")
+    lines.append("  CRITICAL: Always check match_type in the data to choose the right benchmark set.")
+    lines.append("  If match_type = T20 or T20I   -> use T20 benchmarks above")
+    lines.append("  If match_type = ODI or ODII   -> use ODI benchmarks above")
+    lines.append("  If match_type = Test          -> use TEST benchmarks above")
+    lines.append("  If mixed formats in data      -> state each format separately in the analysis")
+    lines.append("  NEVER apply T20 benchmarks to ODI or Test data — they are not interchangeable")
 
     lines.append("\nINSIGHT RULES (follow all of these):")
     for rule in rules["insight_rules"]:
@@ -392,9 +439,11 @@ def build_insight_rules_context():
     lines.append(f"  pressure indicator (batting): {rules['pressure_context']['pressure_indicators']['batting']}")
     lines.append(f"  pressure indicator (bowling): {rules['pressure_context']['pressure_indicators']['bowling']}")
 
-    lines.append("\nOVER CONTEXT (T20 expected RPO):")
+    lines.append("\nOVER CONTEXT (T20 expected RPO — apply only when match_type is T20/T20I):")
     for over, data in rules["over_context"]["T20_expected_runs_per_over"].items():
         lines.append(f"  {over}: expected {data['expected']} -- {data['note']}")
+    lines.append("  NOTE: These RPO expectations apply to T20 only. For ODI, par RPO is ~5-6 in middle overs")
+    lines.append("  and 8-9 in the last 10 overs. For Test, sessions are measured in runs/session not RPO.")
 
     return "\n".join(lines)
 
@@ -969,19 +1018,19 @@ def build_systemic_cricket_knowledge():
     lines.append("")
 
     lines.append("BATTING ARCHETYPES:")
-    lines.append("  AGGRESSOR: SR >145 T20, high boundary%, high 6:4 ratio. Targets off-side and straight.")
-    lines.append("  ANCHOR: Moderate SR 120-135 T20, high average 30+, low dot%, builds the innings platform.")
-    lines.append("  FINISHER: Low/average career average (dies frequently), but exceptional death SR >175.")
-    lines.append("  ACCUMULATOR: High average, moderate SR, runs in singles/twos, very low duck rate.")
-    lines.append("  PINCH-HITTER: High SR for a short burst, lower average, bats middle/lower order.")
+    lines.append("  AGGRESSOR: SR >145 (T20) / >100 (ODI), high boundary%, high 6:4 ratio. Targets off-side and straight.")
+    lines.append("  ANCHOR: Moderate SR — T20: 120-135 / ODI: 80-90 / Test: avg 40+. Low dot%, builds platform.")
+    lines.append("  FINISHER: Low/average career average (dies frequently), but exceptional death SR — T20: >175, ODI: >120.")
+    lines.append("  ACCUMULATOR: High average, moderate SR, runs in singles/twos, very low duck rate across all formats.")
+    lines.append("  PINCH-HITTER: High SR for a short burst, lower average, bats middle/lower order in white-ball cricket.")
     lines.append("")
 
     lines.append("BOWLING ARCHETYPES:")
-    lines.append("  WICKET-TAKER: Bowling SR <15, economy slightly higher, creates constant pressure.")
-    lines.append("  MISER: Economy <7 T20, dot-ball machine, containment specialist.")
-    lines.append("  DEATH SPECIALIST: Higher overall economy acceptable if death economy <9.0; executes yorkers.")
-    lines.append("  POWERPLAY ATTACKER: New-ball swing/seam, attacks top order, powerplay economy <7.5.")
-    lines.append("  SPINNER / CONTROL: Middle-overs specialist, economy <7.5, induces false shots with flight.")
+    lines.append("  WICKET-TAKER: Bowling SR <15 (T20) / <30 (ODI) / <50 (Test), economy slightly higher, constant pressure.")
+    lines.append("  MISER: Economy <7 (T20) / <5 (ODI) / <2.5 (Test) — dot-ball machine, containment specialist.")
+    lines.append("  DEATH SPECIALIST: Higher overall economy acceptable if death economy <9.0 (T20) or <7.0 (ODI); executes yorkers.")
+    lines.append("  POWERPLAY ATTACKER: New-ball swing/seam, attacks top order, powerplay economy <7.5 (T20) / <6.0 (ODI).")
+    lines.append("  SPINNER / CONTROL: Middle-overs specialist — economy <7.5 (T20), <5.0 (ODI), <2.5 (Test); induces false shots.")
     lines.append("")
 
     lines.append("WHY DISMISSAL PATTERNS HAPPEN:")
@@ -997,63 +1046,86 @@ def build_systemic_cricket_knowledge():
     lines.append("    a technical weakness (short of length, off stump channel, angle).")
     lines.append("")
 
-    lines.append("POWERPLAY TACTICAL CONTEXT:")
-    lines.append("  Teams with openers scoring SR >150 in powerplay force the opposition to defend,")
-    lines.append("  open up gaps, and establish innings momentum. A powerplay score of 60+ in T20")
-    lines.append("  is match-defining. Conceding 3 wickets in powerplay reduces batting team average")
-    lines.append("  total by approximately 25-35 runs. The powerplay is the highest-leverage phase.")
+    lines.append("FORMAT-AWARE BENCHMARK RULE (CRITICAL):")
+    lines.append("  ALWAYS derive the format from the data (match_type column) before applying benchmarks.")
+    lines.append("  NEVER default to T20 benchmarks when the format is unknown or mixed.")
+    lines.append("  T20  : SR elite >160 | economy elite <6.5 | death eco elite <9.0 | powerplay overs 1-6")
+    lines.append("  ODI  : SR elite >110 | economy elite <4.5 | death eco elite <7.0 | powerplay overs 1-10")
+    lines.append("  Test : avg elite >55 | economy elite <2.0 | new ball phase overs 1-20")
+    lines.append("  Mixed: state both formats separately — do NOT blend benchmarks across formats")
     lines.append("")
 
-    lines.append("DEATH OVERS CONTEXT:")
-    lines.append("  Death bowling (overs 17-20) is the hardest skill in T20. Economy below 9.0 in death")
-    lines.append("  is genuinely elite. The best death bowlers mix yorkers, slower balls, and bouncers,")
-    lines.append("  reading the batter's trigger movements and back-foot position. Batters failing in")
-    lines.append("  death overs (SR <130 in overs 16-20) cost teams 15-25 runs per innings.")
+    lines.append("POWERPLAY TACTICAL CONTEXT (format-specific):")
+    lines.append("  T20 powerplay (overs 1-6): SR >150 from openers is match-defining. 60+ runs is a strong")
+    lines.append("  platform. Conceding 3 wickets in powerplay costs a batting team ~25-35 runs vs par.")
+    lines.append("  ODI powerplay (overs 1-10): 55+ runs with 2 wickets or fewer is a dominant start.")
+    lines.append("  SR >90 in ODI powerplay is above par; >110 is elite. Economy <7.0 for bowlers is good.")
+    lines.append("  Test new ball (overs 1-20): Survival is the primary batting goal. Economy <2.5 for")
+    lines.append("  bowlers is excellent. A wicket in the first 10 overs is disproportionately valuable.")
+    lines.append("  The powerplay is the highest-leverage phase in ALL formats — but the metrics differ.")
     lines.append("")
 
-    lines.append("PHASE TRANSITION INSIGHT:")
-    lines.append("  A batter excelling in powerplay but poor at death = technique player struggling against")
+    lines.append("DEATH OVERS CONTEXT (format-specific):")
+    lines.append("  T20 death (overs 16-20): Economy below 9.0 is elite. SR >175 for batters is elite.")
+    lines.append("  Batters failing here (SR <130) cost teams 15-25 extra runs per innings.")
+    lines.append("  ODI death (overs 41-50): Economy below 7.0 is elite. SR >110 for batters is good.")
+    lines.append("  The best death bowlers across formats mix yorkers, slower balls, and bouncers,")
+    lines.append("  reading the batter's trigger movements and back-foot position.")
+    lines.append("")
+
+    lines.append("PHASE TRANSITION INSIGHT (format-aware):")
+    lines.append("  A batter excelling in powerplay but poor in death = technique player struggling against")
     lines.append("  variations and yorkers once bowlers have established their rhythm.")
     lines.append("  A batter poor in powerplay but explosive at death = finisher-type, not an opener.")
-    lines.append("  Teams that are strong in middle overs (overs 7-15) maintain run rate momentum and")
-    lines.append("  control wicket attrition — the quiet engine of high T20 totals.")
+    lines.append("  T20 middle overs (7-15): the quiet engine of high totals — wicket preservation here")
+    lines.append("  is as valuable as boundary hitting. ODI middle overs (11-40): run-rate maintenance")
+    lines.append("  and wicket conservation are both critical — the phase where all-rounders are pivotal.")
+    lines.append("  Test middle session: spinners take over, partnership building is the goal.")
     lines.append("")
 
-    lines.append("CONSISTENCY vs MATCH-WINNING:")
-    lines.append("  A player with high average (consistent) but moderate SR may be less valuable in T20")
-    lines.append("  than a player with high SR but lower average. Match-winning innings (50+) are")
-    lines.append("  disproportionately valuable. Both dimensions must be assessed together.")
+    lines.append("CONSISTENCY vs MATCH-WINNING (format-aware):")
+    lines.append("  T20: A player with high SR but lower average can be MORE valuable than a consistent")
+    lines.append("  accumulator. Match-winning innings (50+) are disproportionately valuable.")
+    lines.append("  ODI: Balance of average AND SR matters equally. A 35-average, 95-SR batter is elite.")
+    lines.append("  Test: Average is king. A player averaging 45+ is a genuine asset across any era.")
+    lines.append("  Both average AND strike rate must always be assessed together across all formats.")
     lines.append("")
 
     lines.append("HEAD-TO-HEAD PSYCHOLOGY:")
     lines.append("  When a bowler dismisses the same batter 3+ times, a psychological edge develops.")
-    lines.append("  Captains exploit this in knockout matches. A batter scoring SR >180 vs a bowler owns")
-    lines.append("  that matchup — captains avoid that combination. The matchup history shapes field settings.")
+    lines.append("  Captains exploit this in knockout matches across all formats.")
+    lines.append("  T20: A batter scoring SR >180 vs a bowler owns that matchup completely.")
+    lines.append("  ODI: SR >120 vs a bowler across 20+ balls is batter dominance.")
+    lines.append("  Test: A batter averaging 40+ vs a bowler across 5 innings has neutralised the threat.")
+    lines.append("  The matchup history shapes field settings in every format.")
     lines.append("")
 
     lines.append("FORM vs CLASS:")
     lines.append("  A player in poor recent form (last 5 below average) with strong career credentials")
     lines.append("  is a 'class is permanent' situation — likely to return. A consistently poor performer")
     lines.append("  across 30+ innings has a structural problem: technique, role mismatch, or selection error.")
+    lines.append("  This principle applies equally to T20, ODI, and Test cricket.")
     lines.append("")
 
-    lines.append("CHASE PSYCHOLOGY:")
-    lines.append("  Chasing is harder psychologically in T20 — required rate pressure compounds each over.")
-    lines.append("  Batters with significantly higher chasing average/SR than setting average are genuine")
-    lines.append("  clutch performers — this is a premium, rare quality. A team that chases better than it")
-    lines.append("  sets typically has experienced chase-planners and strong top-order intent.")
+    lines.append("CHASE PSYCHOLOGY (format-aware):")
+    lines.append("  Chasing is harder psychologically in all white-ball formats — required rate pressure")
+    lines.append("  compounds each over. T20 chases: required rate above 10 is difficult; above 12 is crisis.")
+    lines.append("  ODI chases: above 7 RPO in the final 10 overs is under pressure; above 9 is very hard.")
+    lines.append("  Batters with significantly higher chasing average/SR than setting stats are genuine")
+    lines.append("  clutch performers — this is a premium, rare quality in any format.")
     lines.append("")
 
     lines.append("OPPONENT QUALITY:")
-    lines.append("  Performing against strong bowling attacks is harder. A high SR against a weak team")
-    lines.append("  may reflect opposition quality rather than individual brilliance. Always contextualise.")
+    lines.append("  Performing against strong bowling attacks is harder regardless of format.")
+    lines.append("  A high SR against a weak team may reflect opposition quality, not individual brilliance.")
+    lines.append("  Always contextualise opponent quality when interpreting performance splits.")
     lines.append("")
 
     lines.append("FANTASY CRICKET INTELLIGENCE:")
-    lines.append("  High-value captain picks: consistent performers at a venue + recent form + good matchup vs opposition bowlers.")
+    lines.append("  High-value captain picks: consistent performers at a venue + recent form + good matchup.")
     lines.append("  Differentials: overlooked middle-order batters or death bowlers with good venue records.")
     lines.append("  Avoid: players in poor form even if high-profile. Venue batting/bowling average is critical.")
-    lines.append("  Bowling picks: target bowlers with high dot% + economy <8.0 in current conditions.")
+    lines.append("  Bowling picks: target bowlers with high dot% + format-appropriate economy in current conditions.")
 
     return "\n".join(lines)
 
@@ -1631,7 +1703,8 @@ Explain WHY — bowling attack type, conditions, historical context. Note small 
     if is_consistency:
         dimension_notes += """
 CONSISTENCY: Lead with innings distribution table. Calculate duck rate, 30+ rate, 50+ rate.
-Classify as BOOM-OR-BUST or CONSISTENT ACCUMULATOR. Compare vs T20 consistency thresholds.
+Classify as BOOM-OR-BUST or CONSISTENT ACCUMULATOR. Compare vs format-appropriate consistency thresholds.
+Do NOT assume T20 — use whichever format the data reflects (T20, ODI, Test, or mixed).
 """
     if is_h2h:
         dimension_notes += """
@@ -1646,7 +1719,9 @@ Reference required rate context. State if higher chasing performance = genuine c
     if is_allrounder:
         dimension_notes += """
 ALL-ROUNDER: Present batting AND bowling with equal weight. Apply all-rounder tier labels.
-Check against T20 thresholds (200 runs + 10 wickets). State if genuine dual value exists.
+Check against format-appropriate all-rounder thresholds (T20: 200 runs + 10 wickets / ODI: 500 runs + 20 wickets / Test: 1000 runs + 50 wickets).
+Apply the correct threshold based on the match_type in the data — do NOT default to T20 if matches span multiple formats.
+State if genuine dual value exists.
 """
     if is_leaderboard:
         dimension_notes += """
@@ -1673,8 +1748,9 @@ Highlight best milestone season, career totals, and conversion rates (50->100).
 """
     if is_over_by_over:
         dimension_notes += """
-OVER-BY-OVER: Link run rate expectations to T20 benchmarks per over.
-Identify overs where performance significantly deviates from expected RPO.
+OVER-BY-OVER: Link run rate expectations to the correct format benchmarks per over.
+Identify the format from the data (T20: 20 overs, ODI: 50 overs, Test: unlimited) before applying expected RPO.
+Identify overs where performance significantly deviates from expected RPO for that format.
 """
     if is_venue:
         dimension_notes += """
@@ -1732,29 +1808,33 @@ Markdown table. ALL data rows, no truncation.
 
 **Overall Picture**
 1-2 paragraphs. Exact figures. Tier labels (🔴 Elite / 🟠 Excellent / 🟡 Good / 🟢 Average / ⚪ Below Par).
-Connect stats to cricket context. What does this mean for team strategy?
+CRITICAL: Identify the FORMAT(s) the data covers from match_type column — T20, ODI, Test, or mixed.
+State the format explicitly in this section. Apply benchmarks for the correct format — never default to T20.
+Connect stats to cricket context for that specific format. What does this mean for team strategy?
 
 **Strengths**
 2-3 evidence-backed strengths. Cricket language: corridor of uncertainty, hard length,
 wrist position, release variation, powerplay intent. Every claim: a specific number.
+Reference format-appropriate benchmarks when stating whether a stat is strong.
 
 **Weaknesses / Vulnerabilities**
 2-3 evidence-backed weaknesses. What would an opposition analyst exploit?
 What does the captain set the field for? Exact stats.
+Reference format-appropriate benchmarks when stating whether a stat is weak.
 
 {"**Year-by-Year Trend** — chronological narrative, year-on-year deltas, best/worst year inflection points." if is_time_query else ""}
-{"**Phase Breakdown** — Powerplay / Middle / Death with tier label, strongest/weakest phase, tactical implication." if is_phase_query else ""}
+{"**Phase Breakdown** — Phases are format-dependent (T20: PP/Middle/Death | ODI: PP/Middle/Death | Test: New Ball/Middle/Old Ball). Identify the format first, then apply correct phase ranges. Classify each phase with tier label, state strongest/weakest phase, and tactical implication." if is_phase_query else ""}
 {"**Head-to-Head Breakdown** — who controls the matchup, dismissal patterns, captain recommendation." if is_h2h else ""}
-{"**Comparison** — metric-by-metric, clear winner on each, overall winner with justification." if is_comparison else ""}
+{"**Comparison** — metric-by-metric, clear winner on each, overall winner with justification. Ensure both entities are compared against the same format benchmarks." if is_comparison else ""}
 {"**Opponent Split** — best and worst opponents, bogey team/bowler identified, tactical pattern." if is_opponent_query else ""}
-{"**Consistency Profile** — score band distribution, duck rate, 30+ rate, boom-or-bust classifier." if is_consistency else ""}
+{"**Consistency Profile** — score band distribution, duck rate, 30+ rate, boom-or-bust classifier. Apply format-appropriate consistency thresholds." if is_consistency else ""}
 {"**Chase vs Setting** — side-by-side setting/chasing stats, clutch performer assessment." if is_pressure else ""}
 {"**Fantasy Recommendation** — captain pick, vice-captain, differentials, avoid list with reasoning." if is_fantasy else ""}
 {"**Predictive Outlook** — data-backed likelihood statements, key risk factors, selection recommendation." if is_predictive else ""}
 
 **Tactical Intelligence**
 What the opposition captain should plan for. What this team/player's coach should address.
-Phase-specific bowling plans, field settings, batting approach suggestions.
+Phase-specific bowling plans, field settings, batting approach suggestions — all format-specific.
 Ground every suggestion in specific numbers from the data.
 
 ### 📈 Standout Moments / Records
@@ -1764,13 +1844,40 @@ Format: **[Bold the key stat]** — [1-2 sentence explanation of significance]
 {"Include: fantasy captain rationale, differential pick justification." if is_fantasy else ""}
 
 ### 💡 Verdict
-5-7 sentences. Expert-panel quality. Open with tier classification.
+5-7 sentences. Expert-panel quality. Open with tier classification and the format(s) it applies to.
 {"Trajectory: upward / declining / plateauing and why." if is_time_query else ""}
 {"Definitively state who is better and why." if is_comparison else ""}
 {"Is this a clutch performer or does pressure expose them?" if is_pressure else ""}
 {"Bold fantasy selection recommendation in final sentence." if is_fantasy else ""}
 {"State predictive confidence level and primary risk." if is_predictive else ""}
 Single most important finding. Forward-looking recommendation.
+
+### ℹ️ Additional Context
+This section provides supplementary information directly related to the question asked.
+Include ALL of the following that are relevant — omit only if there is genuinely no applicable data:
+
+**Format & Sample Note**
+State which format(s) the analysis covers (T20, ODI, Test, or a mix) and the total sample size
+(matches, innings, or balls). Flag if the sample is small and note how that affects confidence.
+Example: "This analysis covers 47 T20I innings across 2019-2024. Sample is sufficient for reliable conclusions."
+
+**Benchmark Reference**
+State the format-appropriate benchmarks used to classify performance. This gives the reader
+transparency on how tier labels were determined.
+Example: "For T20 cricket, an elite strike rate is defined as >160. For ODIs, elite is >110."
+
+**Data Coverage**
+Note the date range of the data, competitions covered, and any notable gaps or exclusions.
+Example: "Data spans IPL 2020-2024 and does not include international T20Is in this period."
+
+**Related Dimensions Not Asked**
+Briefly flag 1-2 related analytical dimensions that would add further context if explored.
+Example: "A phase-by-phase breakdown would reveal whether this performance concentration is in powerplay or death overs."
+Example: "A head-to-head analysis against specific opposition bowlers would explain the opponent split pattern observed."
+
+**Confidence Level**
+State the analytical confidence: High (15+ innings, stable role, clear pattern) / Medium (8-14 innings) / Low (<8 innings).
+Explain briefly what would increase confidence — more data, specific format split, etc.
 
 ---
 
@@ -1784,7 +1891,9 @@ RULES:
 - No filler: "it is worth noting", "interestingly", "it can be seen that"
 - No hedging in Verdict — state conclusions definitively
 - Never mention SQL/database/queries/tables/columns
-- 700-1200 words, longer if data richness demands
+- NEVER assume T20 — always derive format from the data's match_type field
+- Apply format-correct benchmarks throughout: T20, ODI, and Test have different tier thresholds
+- 700-1400 words total, longer if data richness demands
 """
 
     return llm(prompt)
