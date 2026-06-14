@@ -23,6 +23,14 @@ from cricket_rules import CRICKET_RULES
 load_dotenv()
 
 # =========================================================
+# APP VERSION
+# Bump this string on every deployment so you can confirm
+# the latest build is live via GET /version
+# =========================================================
+
+APP_VERSION = "1.0.0"
+
+# =========================================================
 # VERTEX AI SETUP  (unchanged — do not modify)
 # =========================================================
 
@@ -1201,6 +1209,24 @@ def debug():
 
 
 # =========================================================
+# VERSION
+# Hit GET /version to confirm the correct build is live.
+# Bump APP_VERSION at the top of this file on every deploy.
+# =========================================================
+
+@app.get("/version")
+def version():
+    import datetime
+    return {
+        "version":     APP_VERSION,
+        "app":         "Cricket_Scorer_AI",
+        "model":       "gemini-2.5-flash",
+        "status":      "running",
+        "server_time": datetime.datetime.utcnow().isoformat() + "Z"
+    }
+
+
+# =========================================================
 # GEMINI TEST
 # =========================================================
 
@@ -1807,9 +1833,14 @@ Markdown table. ALL data rows, no truncation.
 ### 🔍 Deep Analysis
 
 **Overall Picture**
-1-2 paragraphs. Exact figures. Tier labels (🔴 Elite / 🟠 Excellent / 🟡 Good / 🟢 Average / ⚪ Below Par).
-CRITICAL: Identify the FORMAT(s) the data covers from match_type column — T20, ODI, Test, or mixed.
-State the format explicitly in this section. Apply benchmarks for the correct format — never default to T20.
+BEFORE writing anything: scan the data for the match_type column values.
+  - If match_type contains "T20" or "T20I" -> use T20 benchmarks
+  - If match_type contains "ODI"            -> use ODI benchmarks
+  - If match_type contains "Test"           -> use Test benchmarks
+  - If match_type is missing or mixed       -> state "Format not confirmed from data" and apply conservative benchmarks; DO NOT default to T20
+State the detected format as the first sentence of this section.
+Then write 1-2 paragraphs with exact figures and tier labels (🔴 Elite / 🟠 Excellent / 🟡 Good / 🟢 Average / ⚪ Below Par).
+Every tier label must reference the format-correct threshold. Example: "A strike rate of 68.75 falls ⚪ Below Par against the T20 benchmark of 110 minimum."
 Connect stats to cricket context for that specific format. What does this mean for team strategy?
 
 **Strengths**
@@ -1852,48 +1883,57 @@ Format: **[Bold the key stat]** — [1-2 sentence explanation of significance]
 {"State predictive confidence level and primary risk." if is_predictive else ""}
 Single most important finding. Forward-looking recommendation.
 
+---
+
 ### ℹ️ Additional Context
-This section provides supplementary information directly related to the question asked.
-Include ALL of the following that are relevant — omit only if there is genuinely no applicable data:
 
-**Format & Sample Note**
-State which format(s) the analysis covers (T20, ODI, Test, or a mix) and the total sample size
-(matches, innings, or balls). Flag if the sample is small and note how that affects confidence.
-Example: "This analysis covers 47 T20I innings across 2019-2024. Sample is sufficient for reliable conclusions."
+⚠️ THIS SECTION IS MANDATORY. YOU MUST WRITE IT. DO NOT SKIP IT. DO NOT END THE RESPONSE AFTER THE VERDICT.
+Every sub-heading below must appear verbatim. Fill in each one using the data provided.
+If a field cannot be determined from the data, write "Not available from current data" — do NOT omit the heading.
 
-**Benchmark Reference**
-State the format-appropriate benchmarks used to classify performance. This gives the reader
-transparency on how tier labels were determined.
-Example: "For T20 cricket, an elite strike rate is defined as >160. For ODIs, elite is >110."
+**📋 Format & Sample**
+State the cricket format this analysis covers. Derive it from the match_type values in the data.
+If match_type is not in the data, state "Format not specified in data — benchmarks applied conservatively."
+State the exact sample size: total balls faced or bowled, total innings, total matches.
+State whether the sample is sufficient (High: 200+ balls / 15+ innings), moderate (Medium: 80-199 balls / 8-14 innings), or limited (Low: <80 balls / <8 innings) and what that means for reliability.
 
-**Data Coverage**
-Note the date range of the data, competitions covered, and any notable gaps or exclusions.
-Example: "Data spans IPL 2020-2024 and does not include international T20Is in this period."
+**📐 Benchmarks Used**
+List the exact benchmark thresholds used to produce every tier label in this report.
+Format each line as: [Metric] — [Format]: [tier thresholds]
+Example: Strike Rate — T20: Poor <110 | Average 110-124 | Good 125-139 | Excellent 140-159 | Elite >160
+Example: Economy Rate — ODI: Elite <4.0 | Excellent 4.0-4.79 | Good 4.8-5.49 | Average 5.5-5.99 | Poor >6.0
+Include one benchmark line for every metric that appears in the Key Numbers table.
 
-**Related Dimensions Not Asked**
-Briefly flag 1-2 related analytical dimensions that would add further context if explored.
-Example: "A phase-by-phase breakdown would reveal whether this performance concentration is in powerplay or death overs."
-Example: "A head-to-head analysis against specific opposition bowlers would explain the opponent split pattern observed."
+**📅 Data Coverage**
+State the earliest and latest match_date visible in the data.
+State which competitions or tournaments are covered if identifiable from the data.
+Flag any obvious gaps — e.g. "Only 2 seasons visible; career may extend beyond this window."
+If dates are not in the data, write: "Date range not available in current result set."
 
-**Confidence Level**
-State the analytical confidence: High (15+ innings, stable role, clear pattern) / Medium (8-14 innings) / Low (<8 innings).
-Explain briefly what would increase confidence — more data, specific format split, etc.
+**🔗 Related Analyses**
+Name exactly 2 follow-up analyses that would add the most useful context given what was asked.
+Frame each as a direct question the user could ask next.
+Example: "Phase breakdown: How does this player's strike rate split across powerplay, middle overs, and death overs?"
+Example: "Recent form: Has performance improved or declined across the last 10 matches?"
+Choose the 2 most analytically relevant follow-ups — not generic ones.
+
+**🎯 Confidence Assessment**
+State confidence as one of: 🟢 High | 🟡 Medium | 🔴 Low
+Justify the rating with the sample size and pattern consistency observed.
+State one specific thing that would upgrade the confidence level.
+Example: "🔴 Low — 80 balls is insufficient for reliable T20 SR conclusions. Confidence upgrades to Medium with 200+ balls faced."
 
 ---
 
-RULES:
-- Exact numbers for EVERY claim
-- Cricket terminology: yorker, doosra, knuckleball, corridor of uncertainty, hard length
-- Markdown tables with pipes and --- separators
-- Bold: **Player Name**, **2023**, **Powerplay**, **Caught**
-- Tier labels with emoji
-- Blend systemic knowledge where it adds explanatory value
-- No filler: "it is worth noting", "interestingly", "it can be seen that"
-- No hedging in Verdict — state conclusions definitively
-- Never mention SQL/database/queries/tables/columns
-- NEVER assume T20 — always derive format from the data's match_type field
-- Apply format-correct benchmarks throughout: T20, ODI, and Test have different tier thresholds
-- 700-1400 words total, longer if data richness demands
+HARD OUTPUT RULES — VIOLATIONS ARE NOT ACCEPTABLE:
+1. The response MUST contain all 5 sections of ### ℹ️ Additional Context — every heading must appear
+2. NEVER end the response after ### 💡 Verdict — the Additional Context section always follows
+3. NEVER assume T20 — derive format from match_type in the data; if unknown, state "format unknown"
+4. Apply format-correct benchmarks: T20 SR elite >160 | ODI SR elite >110 | Test avg elite >55
+5. Every tier label (Elite/Excellent/Good/Average/Below Par) must cite the benchmark that produced it
+6. Exact numbers for every claim — no approximations, no hedging
+7. Cricket terminology only — never mention SQL, database, queries, tables, or columns
+8. 800-1500 words total across all sections
 """
 
     return llm(prompt)
