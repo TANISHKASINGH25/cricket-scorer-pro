@@ -123,6 +123,11 @@ def classify_intent(question: str) -> dict:
     is_venue       = any(w in q for w in ["venue","ground","stadium","pitch","home","away"])
     is_fantasy     = any(w in q for w in ["fantasy","dream11","dream 11","pick","differential","captain","vice captain","points"])
     is_predictive  = any(w in q for w in ["predict","likely","probability","expect","forecast","will","chances","should i pick"])
+    is_time_based  = any(w in q for w in [
+        "time","duration","how long","longest","slowest","fastest","minutes","seconds","hours",
+        "pace of play","over rate","time per over","time taken","took longest","crease time",
+        "time spent","how much time","elapsed","between deliveries","delay","slow over rate"
+    ])
 
     # ── Format detection ──────────────────────────────────
     fmt_t20  = any(w in q for w in ["t20","t-20","ipl","bbl","psl","cpl","sa20","hundred","the hundred"])
@@ -160,6 +165,7 @@ def classify_intent(question: str) -> dict:
         "is_venue":       is_venue,
         "is_fantasy":     is_fantasy,
         "is_predictive":  is_predictive,
+        "is_time_based":  is_time_based,
         # Format
         "fmt_t20":  fmt_t20,
         "fmt_odi":  fmt_odi,
@@ -650,34 +656,264 @@ def build_date_context():
 # BUILD FORMAT CONTEXT
 # =========================================================
 
+def build_timestamp_context():
+    lines = []
+
+    lines.append("TIMESTAMP COLUMN RULES — READ EVERY LINE BEFORE WRITING ANY TIME-BASED SQL:")
+    lines.append("")
+    lines.append("COLUMN: timestamp")
+    lines.append("  Table  : public.nv_play")
+    lines.append("  Type   : TEXT stored as 'YYYYMMDD HH24:MI:SS.MS'")
+    lines.append("           Example value: '20230415 14:32:45.123'")
+    lines.append("  Purpose: Records the exact wall-clock moment each delivery was bowled.")
+    lines.append("           USE THIS COLUMN for ALL time/duration/pace-of-play questions.")
+    lines.append("")
+    lines.append("CASTING THE TIMESTAMP (PostgreSQL):")
+    lines.append("  TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')  -> returns TIMESTAMPTZ")
+    lines.append("  Always cast before doing any arithmetic or comparison:")
+    lines.append("    TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS') AS delivery_time")
+    lines.append("  NEVER compare raw TEXT timestamps with < > — always cast first.")
+    lines.append("")
+    lines.append("COMMON TIME-BASED CALCULATIONS:")
+    lines.append("")
+    lines.append("  1. TIME SPENT AT CREASE (batter duration):")
+    lines.append("     -- Difference between first and last ball faced by a batter in an innings")
+    lines.append("""
+  SELECT
+    batter,
+    match_id,
+    innings_number,
+    MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS first_ball_time,
+    MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS last_ball_time,
+    EXTRACT(EPOCH FROM (
+      MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
+      MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
+    )) / 60.0                                                        AS minutes_at_crease,
+    COUNT(*) FILTER (WHERE legal_ball = TRUE)                        AS balls_faced,
+    SUM(runs_batter)                                                  AS runs
+  FROM public.nv_play
+  WHERE batter ILIKE '%name%'
+    AND timestamp IS NOT NULL
+  GROUP BY batter, match_id, innings_number
+  ORDER BY minutes_at_crease DESC
+""")
+
+    lines.append("  2. OVER DURATION (time to bowl one over):")
+    lines.append("     -- Time from first to last ball of each over")
+    lines.append("""
+  SELECT
+    bowler,
+    match_id,
+    innings_number,
+    over_number,
+    MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS over_start,
+    MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS over_end,
+    EXTRACT(EPOCH FROM (
+      MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
+      MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
+    )) / 60.0                                                        AS over_duration_minutes,
+    COUNT(*) FILTER (WHERE legal_ball = TRUE)                        AS legal_balls_in_over
+  FROM public.nv_play
+  WHERE timestamp IS NOT NULL
+  GROUP BY bowler, match_id, innings_number, over_number
+  ORDER BY over_duration_minutes DESC
+""")
+
+    lines.append("  3. AVERAGE TIME PER OVER (by bowler — who bowls slowest):")
+    lines.append("""
+  WITH over_durations AS (
+    SELECT
+      bowler,
+      match_id,
+      innings_number,
+      over_number,
+      EXTRACT(EPOCH FROM (
+        MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
+        MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
+      )) / 60.0                                                      AS over_duration_minutes,
+      COUNT(*) FILTER (WHERE legal_ball = TRUE)                      AS legal_balls
+    FROM public.nv_play
+    WHERE timestamp IS NOT NULL
+    GROUP BY bowler, match_id, innings_number, over_number
+    HAVING COUNT(*) FILTER (WHERE legal_ball = TRUE) >= 6
+  )
+  SELECT
+    bowler,
+    COUNT(*)                                                         AS overs_bowled,
+    ROUND(AVG(over_duration_minutes)::numeric, 2)                   AS avg_minutes_per_over,
+    ROUND(MAX(over_duration_minutes)::numeric, 2)                   AS slowest_over_minutes,
+    ROUND(MIN(over_duration_minutes)::numeric, 2)                   AS fastest_over_minutes
+  FROM over_durations
+  GROUP BY bowler
+  HAVING COUNT(*) >= 5
+  ORDER BY avg_minutes_per_over DESC
+  LIMIT 20
+""")
+
+    lines.append("  4. TOTAL TIME SPENT AT CREASE (career — across all innings):")
+    lines.append("""
+  WITH innings_durations AS (
+    SELECT
+      batter,
+      match_id,
+      innings_number,
+      EXTRACT(EPOCH FROM (
+        MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
+        MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
+      )) / 60.0                                                      AS minutes_at_crease,
+      COUNT(*) FILTER (WHERE legal_ball = TRUE)                      AS balls_faced,
+      SUM(runs_batter)                                               AS runs
+    FROM public.nv_play
+    WHERE timestamp IS NOT NULL
+    GROUP BY batter, match_id, innings_number
+  )
+  SELECT
+    batter,
+    COUNT(*)                                                         AS innings,
+    ROUND(SUM(minutes_at_crease)::numeric, 2)                       AS total_minutes_at_crease,
+    ROUND(AVG(minutes_at_crease)::numeric, 2)                       AS avg_minutes_per_innings,
+    ROUND(MAX(minutes_at_crease)::numeric, 2)                       AS longest_innings_minutes,
+    SUM(balls_faced)                                                 AS total_balls_faced,
+    SUM(runs)                                                        AS total_runs
+  FROM innings_durations
+  GROUP BY batter
+  ORDER BY total_minutes_at_crease DESC
+  LIMIT 20
+""")
+
+    lines.append("  5. TIME BETWEEN DELIVERIES (pace of play / bowling speed):")
+    lines.append("""
+  WITH ball_times AS (
+    SELECT
+      bowler,
+      match_id,
+      innings_number,
+      over_number,
+      ball_number,
+      TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')             AS ball_time,
+      LAG(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
+        OVER (PARTITION BY match_id, innings_number
+              ORDER BY TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) AS prev_ball_time
+    FROM public.nv_play
+    WHERE timestamp IS NOT NULL
+      AND legal_ball = TRUE
+  )
+  SELECT
+    bowler,
+    COUNT(*)                                                         AS deliveries,
+    ROUND(AVG(EXTRACT(EPOCH FROM (ball_time - prev_ball_time)))::numeric, 2)
+                                                                     AS avg_seconds_between_balls,
+    ROUND(MAX(EXTRACT(EPOCH FROM (ball_time - prev_ball_time)))::numeric, 2)
+                                                                     AS max_seconds_between_balls
+  FROM ball_times
+  WHERE prev_ball_time IS NOT NULL
+    AND EXTRACT(EPOCH FROM (ball_time - prev_ball_time)) BETWEEN 5 AND 300
+  GROUP BY bowler
+  HAVING COUNT(*) >= 30
+  ORDER BY avg_seconds_between_balls DESC
+  LIMIT 20
+""")
+
+    lines.append("  6. MATCH DURATION (total time from first to last ball):")
+    lines.append("""
+  SELECT
+    match_id,
+    innings_number,
+    MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS innings_start,
+    MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS innings_end,
+    ROUND(EXTRACT(EPOCH FROM (
+      MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
+      MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
+    )) / 60.0 :: numeric, 2)                                        AS innings_duration_minutes,
+    COUNT(*) FILTER (WHERE legal_ball = TRUE)                        AS legal_balls,
+    SUM(runs_total)                                                   AS total_runs
+  FROM public.nv_play
+  WHERE timestamp IS NOT NULL
+  GROUP BY match_id, innings_number
+  ORDER BY innings_duration_minutes DESC
+  LIMIT 20
+""")
+
+    lines.append("TIMESTAMP SAFETY RULES:")
+    lines.append("  1. ALWAYS filter WHERE timestamp IS NOT NULL before using it")
+    lines.append("  2. ALWAYS cast with TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS') — never raw text")
+    lines.append("  3. ALWAYS use EXTRACT(EPOCH FROM ...) for duration arithmetic — gives seconds")
+    lines.append("  4. Divide by 60.0 for minutes, 3600.0 for hours")
+    lines.append("  5. When computing time between balls, filter out gaps > 300 seconds (5 min)")
+    lines.append("     to avoid counting innings breaks, lunch, or tea intervals")
+    lines.append("  6. HAVING COUNT(*) >= 6 on over duration ensures only complete overs are analysed")
+    lines.append("  7. Use LAG() window function for ball-to-ball interval calculations")
+    lines.append("")
+    lines.append("NATURAL LANGUAGE -> TIMESTAMP SQL:")
+    lines.append("  'how long did X bat'         -> innings_durations CTE, SUM(minutes_at_crease) for batter X")
+    lines.append("  'longest time at crease'     -> total_minutes_at_crease DESC LIMIT 1")
+    lines.append("  'slowest over rate'          -> avg_minutes_per_over DESC — use pattern 3 above")
+    lines.append("  'how long to bowl an over'   -> avg_minutes_per_over DESC — use pattern 3 above")
+    lines.append("  'time taken to finish overs' -> avg_minutes_per_over DESC — use pattern 3 above")
+    lines.append("  'fastest bowler'             -> avg_seconds_between_balls ASC — use pattern 5")
+    lines.append("  'slowest bowler'             -> avg_seconds_between_balls DESC — use pattern 5")
+    lines.append("  'match duration'             -> innings_duration_minutes — use pattern 6")
+    lines.append("  'time between balls'         -> LAG() pattern 5 above")
+
+    return "\n".join(lines)
+
+
 def build_format_context():
     lines = []
 
     lines.append("CRICKET FORMAT RULES:")
     lines.append("")
-    lines.append("FORMAT DETECTION from question:")
-    lines.append("  T20 / T20I / IPL / BBL / PSL / CPL     -> match_type ILIKE '%T20%'")
-    lines.append("  ODI / one-day / 50-over / List A        -> match_type ILIKE '%ODI%'")
-    lines.append("  Test / Test match / red-ball            -> match_type ILIKE '%Test%'")
-    lines.append("  If no format specified                  -> DO NOT filter match_type")
+    lines.append("ACTUAL match_type VALUES IN THE DATABASE (use these for filtering):")
+    lines.append("  The match_type column contains the raw format string stored in the database.")
+    lines.append("  DO NOT assume values — the database contains these known types:")
+    lines.append("    'T20'        -> Twenty20 matches (club/domestic T20)")
+    lines.append("    'T20I'       -> Twenty20 Internationals")
+    lines.append("    '50 Over'    -> One-day / 50-over matches (maps to ODI benchmarks)")
+    lines.append("    'ODI'        -> One Day Internationals")
+    lines.append("    'Timed'      -> Timed cricket — equivalent to First-Class / Test format")
+    lines.append("    'First Class'-> First-Class cricket (maps to Test benchmarks)")
+    lines.append("    'Test'       -> Test matches")
+    lines.append("    'List A'     -> List A one-day cricket (maps to ODI benchmarks)")
+    lines.append("")
+    lines.append("  BENCHMARK MAPPING — map actual match_type to the correct benchmark set:")
+    lines.append("    match_type IN ('T20', 'T20I')               -> USE T20 benchmarks")
+    lines.append("    match_type IN ('50 Over', 'ODI', 'List A')  -> USE ODI benchmarks")
+    lines.append("    match_type IN ('Timed', 'First Class', 'Test') -> USE Test benchmarks")
+    lines.append("")
+    lines.append("FORMAT DETECTION FROM USER QUESTION:")
+    lines.append("  T20 / T20I / IPL / BBL / PSL / CPL     -> match_type IN ('T20','T20I')")
+    lines.append("  ODI / one-day / 50-over / List A        -> match_type IN ('50 Over','ODI','List A')")
+    lines.append("  Test / timed / red-ball / first-class   -> match_type IN ('Timed','Test','First Class')")
+    lines.append("  If no format mentioned in question      -> DO NOT filter match_type — include all")
+    lines.append("")
+    lines.append("CRITICAL FORMAT RULE FOR INSIGHT GENERATION:")
+    lines.append("  When the data contains match_type = '50 Over' -> benchmark against ODI standards")
+    lines.append("  When the data contains match_type = 'Timed'   -> benchmark against Test standards")
+    lines.append("  NEVER apply T20 benchmarks to '50 Over' or 'Timed' data")
+    lines.append("  NEVER describe '50 Over' matches as 'ODI-style T20' or assume they are T20")
+    lines.append("  In the insight output, always name the format exactly as it appears in match_type")
+    lines.append("  e.g. write '50 Over cricket' not 'ODI cricket' if match_type = '50 Over'")
+    lines.append("  e.g. write 'Timed cricket' not 'Test cricket' if match_type = 'Timed'")
     lines.append("")
     lines.append("OVER RANGES BY FORMAT:")
-    lines.append("  T20  : total 1-20  | powerplay 1-6   | middle 7-15  | death 16-20")
-    lines.append("  ODI  : total 1-50  | powerplay 1-10  | middle 11-40 | death 41-50")
-    lines.append("  Test : no limit    | new ball 1-20   | middle 21-60 | old ball 61+")
+    lines.append("  T20 / T20I   : total 1-20  | powerplay 1-6   | middle 7-15   | death 16-20")
+    lines.append("  50 Over / ODI: total 1-50  | powerplay 1-10  | middle 11-40  | death 41-50")
+    lines.append("  Timed / Test : no over limit | new ball 1-20 | middle 21-60  | old ball 61+")
     lines.append("")
-    lines.append("FORMAT-SPECIFIC BENCHMARKS:")
-    lines.append("  T20  batting SR elite >160 | good 140-160 | average 125-140")
-    lines.append("  ODI  batting SR elite >110 | good  95-110 | average  85-95")
-    lines.append("  T20  bowling eco elite <6.5 | good 6.5-8.5 | poor >9.5")
-    lines.append("  ODI  bowling eco elite <4.5 | good 4.5-5.5 | poor >6.5")
+    lines.append("FORMAT-SPECIFIC BENCHMARKS (quick reference):")
+    lines.append("  T20/T20I     batting SR: elite >160 | good 140-160 | average 125-140")
+    lines.append("  50 Over/ODI  batting SR: elite >110 | good  95-110 | average  85-95")
+    lines.append("  Timed/Test   batting avg: elite >55 | good 35-44   | average 25-34")
+    lines.append("  T20/T20I     bowling eco: elite <6.5 | good 6.5-8.5  | poor >9.5")
+    lines.append("  50 Over/ODI  bowling eco: elite <4.5 | good 4.5-5.5  | poor >6.5")
+    lines.append("  Timed/Test   bowling eco: elite <2.0 | good 2.5-2.99 | poor >3.5")
     lines.append("")
     lines.append("TOURNAMENT / COMPETITION FILTERING:")
-    lines.append("  IPL           -> competition ILIKE '%IPL%'")
-    lines.append("  T20 World Cup -> competition ILIKE '%World Cup%' AND match_type ILIKE '%T20%'")
-    lines.append("  ODI World Cup -> competition ILIKE '%World Cup%' AND match_type ILIKE '%ODI%'")
+    lines.append("  IPL              -> competition ILIKE '%IPL%'")
+    lines.append("  T20 World Cup    -> competition ILIKE '%World Cup%' AND match_type IN ('T20','T20I')")
+    lines.append("  ODI World Cup    -> competition ILIKE '%World Cup%' AND match_type IN ('ODI','50 Over')")
     lines.append("  Champions Trophy -> competition ILIKE '%Champions Trophy%'")
-    lines.append("  Big Bash       -> competition ILIKE '%Big Bash%'")
+    lines.append("  Big Bash         -> competition ILIKE '%Big Bash%'")
 
     return "\n".join(lines)
 
@@ -1332,6 +1568,7 @@ def generate_query_plan(question, relax_thresholds=False,
     rules_context     = build_rules_context()
     cricket_terms     = build_cricket_terms_context()
     date_context      = build_date_context()
+    timestamp_context = build_timestamp_context()
     format_context    = build_format_context()
     advanced_patterns = build_advanced_patterns_context()
     baseline_hint     = build_baseline_queries_hint()
@@ -1344,6 +1581,11 @@ def generate_query_plan(question, relax_thresholds=False,
         intent_hint = f"\nDETECTED INTENT FLAGS: {', '.join(flags)}\n"
         if intent.get("candidate_names"):
             intent_hint += f"CANDIDATE ENTITY NAMES: {', '.join(intent['candidate_names'])}\n"
+        # Escalate timestamp instructions when time-based intent is detected
+        if intent.get("is_time_based"):
+            intent_hint += "\n⚠️  TIME-BASED QUERY DETECTED: You MUST use the timestamp column.\n"
+            intent_hint += "    Follow the TIMESTAMP COLUMN RULES section exactly.\n"
+            intent_hint += "    DO NOT answer with balls_faced as a proxy — use actual time arithmetic.\n"
 
     threshold_note = ""
     if relax_thresholds:
@@ -1357,7 +1599,7 @@ RETRY MODE — PREVIOUS ATTEMPT RETURNED ZERO ROWS:
 
     prompt = f"""
 You are Cricket_Scorer_AI — an elite cricket data engineer with encyclopaedic knowledge
-of T20, ODI, Test, and all global domestic formats.
+of T20, ODI, Test, 50 Over, Timed, and all global domestic formats.
 
 YOUR ONLY JOB: Translate the user's question into a precise, production-grade multi-query
 PostgreSQL plan. The plan MUST include proactive baseline queries that contextualise the answer,
@@ -1388,6 +1630,9 @@ CRICKET TERMINOLOGY -> SQL:
 
 DATE & TIME RULES:
 {date_context}
+
+TIMESTAMP COLUMN RULES (for all time/duration/pace-of-play questions):
+{timestamp_context}
 
 FORMAT & COMPETITION CONTEXT:
 {format_context}
@@ -1433,6 +1678,9 @@ MULTI-QUERY STRATEGY:
   Consistency/milestones    -> Q1 career_baseline + Q2 innings_distribution + Q3 dismissal_breakdown
   Fantasy                   -> Q1 recent_form_batting + Q2 recent_form_bowling + Q3 venue_split
   Predictive/analysis       -> Q1 career_baseline + Q2 opponent_split + Q3 phase_split + Q4 recent_form
+  TIME/DURATION (crease)    -> Q1 total_minutes_at_crease + Q2 career_baseline (balls/runs context)
+  TIME/DURATION (over rate) -> Q1 avg_minutes_per_over + Q2 balls_bowled_context
+  TIME/DURATION (pace)      -> Q1 avg_seconds_between_balls + Q2 over_count_context
 
 ANALYSIS TYPE -> QUERY STRATEGY:
   CAREER BATTING    -> career_baseline + phase_split + dismissal_breakdown + yearly_trend
@@ -1453,6 +1701,9 @@ ANALYSIS TYPE -> QUERY STRATEGY:
   OVER ANALYSIS     -> over_by_over + phase_context
   FANTASY           -> recent_form_batting + recent_form_bowling + venue_split
   PREDICTIVE        -> career_baseline + form + matchup + phase_analysis
+  TIME AT CREASE    -> total_minutes_at_crease_leaderboard + career_balls_context
+  OVER RATE         -> avg_minutes_per_over_by_bowler + overs_bowled_context
+  PACE OF PLAY      -> avg_seconds_between_balls + delivery_count_context
 
 OUTPUT FORMAT — STRICT JSON ONLY, NO PREAMBLE, NO MARKDOWN:
 
@@ -1465,6 +1716,7 @@ OUTPUT FORMAT — STRICT JSON ONLY, NO PREAMBLE, NO MARKDOWN:
   "has_recent_form": true | false,
   "has_fantasy_dimension": true | false,
   "has_predictive_dimension": true | false,
+  "has_time_based_dimension": true | false,
   "threshold_applied": true | false,
   "queries": [
     {{
@@ -1488,14 +1740,15 @@ USER QUESTION:
         return json.loads(raw)
     except Exception:
         return {
-            "analysis_type":          "single",
-            "has_time_dimension":      False,
-            "has_phase_dimension":     False,
-            "has_comparison":          False,
-            "has_recent_form":         False,
-            "has_fantasy_dimension":   False,
-            "has_predictive_dimension":False,
-            "threshold_applied":       False,
+            "analysis_type":           "single",
+            "has_time_dimension":       False,
+            "has_phase_dimension":      False,
+            "has_comparison":           False,
+            "has_recent_form":          False,
+            "has_fantasy_dimension":    False,
+            "has_predictive_dimension": False,
+            "has_time_based_dimension": False,
+            "threshold_applied":        False,
             "queries": [
                 {
                     "name":    "fallback_query",
@@ -1512,9 +1765,10 @@ USER QUESTION:
 
 def generate_fallback_sql(question):
     schema_context = build_schema_context(question)
-    cricket_terms  = build_cricket_terms_context()
-    date_context   = build_date_context()
-    format_context = build_format_context()
+    cricket_terms     = build_cricket_terms_context()
+    date_context      = build_date_context()
+    timestamp_context = build_timestamp_context()
+    format_context    = build_format_context()
 
     prompt = f"""
 You are a PostgreSQL expert for cricket ball-by-ball data.
@@ -1523,6 +1777,7 @@ TABLE: public.nv_play (each row = one delivery)
 SCHEMA: {schema_context}
 TERMINOLOGY: {cricket_terms}
 DATE RULES: {date_context}
+TIMESTAMP RULES: {timestamp_context}
 FORMAT RULES: {format_context}
 
 Return ONLY raw SQL, no markdown, no backticks, no explanation.
@@ -1531,6 +1786,7 @@ Rules: SELECT only | PostgreSQL syntax | Schema columns only | wicket IS NOT NUL
 | ILIKE '%name%' | NO HAVING | EXTRACT(YEAR FROM match_date)::int AS year | NO YEAR()/MONTH()/DATEADD()
 | SR = (SUM(runs_batter)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100
 | Economy = (SUM(runs_total)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6
+| For time questions: TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS') and EXTRACT(EPOCH FROM ...)
 
 QUESTION: {question}
 """
@@ -1695,8 +1951,31 @@ to analyse. Still classify against benchmarks and deliver a full verdict.
     is_milestone      = intent.get("is_milestone", False)
     is_over_by_over   = intent.get("is_over_by_over", False)
     is_venue          = intent.get("is_venue", False)
+    is_time_based     = intent.get("is_time_based", False)
 
     dimension_notes = ""
+
+    if is_time_based:
+        dimension_notes += """
+TIME / DURATION ANALYSIS:
+The data contains actual time measurements from the timestamp column (wall-clock time per delivery).
+ALL time figures MUST come from these measurements — never substitute balls_faced as a proxy for time.
+
+Present time in minutes (and seconds where relevant): e.g. "47 minutes 23 seconds" not just "47.38".
+Structure the insight as follows:
+  1. State WHO holds the record and the exact time figure (e.g. "Jack Boyle spent 94.3 minutes at the crease across innings X")
+  2. Give context: how many balls faced, runs scored, and the match/innings this occurred in
+  3. Compare against other players in the result set
+  4. Explain WHAT this means tactically — is this batter an anchor? A tempo-setter?
+  5. Note the format (50 Over / Timed / T20) — time at crease means different things in each format
+
+For "slowest over rate" or "time to finish overs" questions:
+  - Report avg_minutes_per_over as the primary metric
+  - Explain why a slower over rate might occur: extra deliveries (wides/no-balls), lengthy field settings, batter time-wasting
+  - Flag if the result includes partial overs and how that affects the comparison
+
+DO NOT revert to answering with balls_faced if time data is present in the results.
+"""
 
     if is_time_query:
         dimension_notes += """
@@ -2079,6 +2358,7 @@ def generate_intent_summary(question: str, intent: dict) -> str:
         "is_venue":       "Venue analysis",
         "is_fantasy":     "Fantasy cricket recommendation",
         "is_predictive":  "Predictive insight",
+        "is_time_based":  "Time / duration / pace-of-play analysis",
     }
     for k, label in mapping.items():
         if intent.get(k):
@@ -2185,13 +2465,14 @@ def ask_question(req: QueryRequest):
             "question":              req.question,
             "intent_summary":        intent_summary,
             "intent_flags": {
-                "analysis_type":       query_plan.get("analysis_type",       "single"),
-                "has_time_dimension":  query_plan.get("has_time_dimension",  False),
-                "has_phase_dimension": query_plan.get("has_phase_dimension", False),
-                "has_comparison":      query_plan.get("has_comparison",      False),
-                "has_recent_form":     query_plan.get("has_recent_form",     False),
-                "has_fantasy":         query_plan.get("has_fantasy_dimension", False),
-                "has_predictive":      query_plan.get("has_predictive_dimension", False),
+                "analysis_type":       query_plan.get("analysis_type",          "single"),
+                "has_time_dimension":  query_plan.get("has_time_dimension",      False),
+                "has_phase_dimension": query_plan.get("has_phase_dimension",     False),
+                "has_comparison":      query_plan.get("has_comparison",          False),
+                "has_recent_form":     query_plan.get("has_recent_form",         False),
+                "has_fantasy":         query_plan.get("has_fantasy_dimension",   False),
+                "has_predictive":      query_plan.get("has_predictive_dimension",False),
+                "has_time_based":      query_plan.get("has_time_based_dimension",False),
             },
             "thresholds_relaxed":    thresholds_relaxed,
             "sql_queries":           sql_queries,
