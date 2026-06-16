@@ -813,4 +813,24 @@ NV_PLAY_DICTIONARY = {
             "t20",
         ],
     },
+    "timestamp": {
+        "description": (
+            "Wall-clock date and time when each delivery was bowled. "
+            "Stored as TIMESTAMP WITHOUT TIME ZONE in PostgreSQL — it is ALREADY a TIMESTAMP type. "
+            "Use directly: MIN(timestamp), MAX(timestamp), LAG(timestamp). "
+            "NEVER call TO_TIMESTAMP(timestamp, 'format') — this will cause a PostgreSQL error. "
+            "For duration: EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) gives seconds; divide by 60 for minutes. "
+            "Use this column for: time at crease, over duration, pace of play, time between deliveries, match duration. "
+            "Always filter: WHERE timestamp IS NOT NULL"
+        ),
+        "datatype": "TIMESTAMP",
+        "category": "match_info",
+        "aggregation": "min/max",
+        "synonyms": [
+            "time", "delivery time", "ball time", "clock", "wall clock",
+            "time at crease", "over duration", "pace of play", "over rate",
+            "time between balls", "duration", "how long", "elapsed time",
+            "longest crease", "slowest bowler", "fastest bowler",
+        ],
+    }
 }

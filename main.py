@@ -479,16 +479,16 @@ def build_cricket_terms_context():
     lines.append("  number 4 / no.4        -> batting_position = 4")
 
     lines.append("\nPHASES (T20):")
-    lines.append("  powerplay / pp / pp1   -> over_number BETWEEN 1 AND 6")
-    lines.append("  middle overs           -> over_number BETWEEN 7 AND 15")
-    lines.append("  death / slog overs     -> over_number BETWEEN 16 AND 20")
-    lines.append("  first over             -> over_number = 1")
-    lines.append("  last / final over      -> over_number = 20")
+    lines.append("  powerplay / pp / pp1   -> over BETWEEN 1 AND 6")
+    lines.append("  middle overs           -> over BETWEEN 7 AND 15")
+    lines.append("  death / slog overs     -> over BETWEEN 16 AND 20")
+    lines.append("  first over             -> over = 1")
+    lines.append("  last / final over      -> over = 20")
 
     lines.append("\nPHASES (ODI):")
-    lines.append("  odi powerplay          -> over_number BETWEEN 1 AND 10")
-    lines.append("  odi middle overs       -> over_number BETWEEN 11 AND 40")
-    lines.append("  odi death overs        -> over_number BETWEEN 41 AND 50")
+    lines.append("  odi powerplay          -> over BETWEEN 1 AND 10")
+    lines.append("  odi middle overs       -> over BETWEEN 11 AND 40")
+    lines.append("  odi death overs        -> over BETWEEN 41 AND 50")
 
     lines.append("\nDISMISSALS:")
     lines.append("  caught                 -> wicket = 'Caught'")
@@ -497,26 +497,26 @@ def build_cricket_terms_context():
     lines.append("  run out                -> wicket = 'Run Out'")
     lines.append("  stumped                -> wicket = 'Stumped'")
     lines.append("  hit wicket             -> wicket = 'Hit Wicket'")
-    lines.append("  duck                   -> runs_batter = 0 AND wicket IS NOT NULL")
+    lines.append("  duck                   -> runs = 0 AND wicket IS NOT NULL")
     lines.append("  dismissed              -> wicket IS NOT NULL")
     lines.append("  not out                -> wicket IS NULL")
-    lines.append("  golden duck            -> runs_batter = 0 AND wicket IS NOT NULL AND ball_number = 1")
+    lines.append("  golden duck            -> runs = 0 AND wicket IS NOT NULL AND ball = 1")
 
     lines.append("\nDELIVERY TYPES:")
-    lines.append("  dot ball               -> runs_total = 0 AND legal_ball = TRUE")
-    lines.append("  boundary               -> runs_batter IN (4, 6)")
-    lines.append("  six / sixes            -> runs_batter = 6")
-    lines.append("  four / fours           -> runs_batter = 4")
+    lines.append("  dot ball               -> (runs + extra_runs) = 0 AND legal_ball = TRUE")
+    lines.append("  boundary               -> runs IN (4, 6)")
+    lines.append("  six / sixes            -> runs = 6")
+    lines.append("  four / fours           -> runs = 4")
     lines.append("  free hit               -> free_hit = TRUE")
     lines.append("  wide                   -> legal_ball = FALSE")
     lines.append("  no ball                -> legal_ball = FALSE")
-    lines.append("  scoring shot           -> runs_batter > 0 AND legal_ball = TRUE")
+    lines.append("  scoring shot           -> runs > 0 AND legal_ball = TRUE")
 
     lines.append("\nMATCH CONTEXT:")
-    lines.append("  first innings          -> innings_number = 1")
-    lines.append("  second innings / chase -> innings_number = 2")
-    lines.append("  batting first          -> innings_number = 1")
-    lines.append("  batting second         -> innings_number = 2")
+    lines.append("  first innings          -> innings = 1")
+    lines.append("  second innings / chase -> innings = 2")
+    lines.append("  batting first          -> innings = 1")
+    lines.append("  batting second         -> innings = 2")
 
     lines.append("\nFIELDING / BOWLING ANGLE:")
     lines.append("  keeper up              -> keeper_up = TRUE")
@@ -525,22 +525,22 @@ def build_cricket_terms_context():
     lines.append("  over the wicket        -> around_the_wicket = FALSE")
 
     lines.append("\nPERFORMANCE FORMULAS (PostgreSQL only):")
-    lines.append("  economy rate        -> ROUND((SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6, 2)")
-    lines.append("  batting strike rate -> ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
-    lines.append("  batting average     -> ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
-    lines.append("  bowling average     -> ROUND(SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
-    lines.append("  dot ball %          -> ROUND((COUNT(*) FILTER (WHERE runs_total=0 AND legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
-    lines.append("  boundary %          -> ROUND((COUNT(*) FILTER (WHERE runs_batter IN (4,6))::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
-    lines.append("  six %               -> ROUND((COUNT(*) FILTER (WHERE runs_batter=6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
-    lines.append("  scoring rate        -> ROUND((COUNT(*) FILTER (WHERE runs_batter>0 AND legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
-    lines.append("  wickets per match   -> ROUND(COUNT(*) FILTER (WHERE wicket IS NOT NULL)::numeric / NULLIF(COUNT(DISTINCT match_id),0), 2)")
+    lines.append("  economy rate        -> ROUND((SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6, 2)")
+    lines.append("  batting strike rate -> ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  batting average     -> ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
+    lines.append("  bowling average     -> ROUND(SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
+    lines.append("  dot ball %          -> ROUND((COUNT(*) FILTER (WHERE (runs + extra_runs) = 0 AND legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  boundary %          -> ROUND((COUNT(*) FILTER (WHERE runs IN (4,6))::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  six %               -> ROUND((COUNT(*) FILTER (WHERE runs=6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  scoring rate        -> ROUND((COUNT(*) FILTER (WHERE runs>0 AND legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  wickets per match   -> ROUND(COUNT(*) FILTER (WHERE wicket IS NOT NULL)::numeric / NULLIF(COUNT(DISTINCT match),0), 2)")
     lines.append("  bowling SR          -> ROUND(COUNT(*) FILTER (WHERE legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
 
     lines.append("\nPHASE-CONDITIONAL AGGREGATIONS:")
-    lines.append("  SR in powerplay  -> ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 1 AND 6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 1 AND 6),0))*100,2)")
-    lines.append("  SR in death      -> ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 16 AND 20)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 16 AND 20),0))*100,2)")
-    lines.append("  eco in powerplay -> ROUND((SUM(runs_total) FILTER (WHERE over_number BETWEEN 1 AND 6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 1 AND 6),0))*6,2)")
-    lines.append("  eco in death     -> ROUND((SUM(runs_total) FILTER (WHERE over_number BETWEEN 16 AND 20)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 16 AND 20),0))*6,2)")
+    lines.append("  SR in powerplay  -> ROUND((SUM(runs) FILTER (WHERE over BETWEEN 1 AND 6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 1 AND 6),0))*100,2)")
+    lines.append("  SR in death      -> ROUND((SUM(runs) FILTER (WHERE over BETWEEN 16 AND 20)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 16 AND 20),0))*100,2)")
+    lines.append("  eco in powerplay -> ROUND((SUM(runs + extra_runs) FILTER (WHERE over BETWEEN 1 AND 6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 1 AND 6),0))*6,2)")
+    lines.append("  eco in death     -> ROUND((SUM(runs + extra_runs) FILTER (WHERE over BETWEEN 16 AND 20)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 16 AND 20),0))*6,2)")
 
     return "\n".join(lines)
 
@@ -555,55 +555,55 @@ def build_date_context():
     lines.append("DATE & TIME COLUMN RULES — READ EVERY LINE:")
     lines.append("")
     lines.append("PRIMARY DATE COLUMN:")
-    lines.append("  match_date   -> PostgreSQL DATE type (stored as 'YYYY-MM-DD')")
-    lines.append("  ALL year/season/month/day/recent/latest filters use match_date")
-    lines.append("  NEVER attempt to cast or convert match_date — it is already a DATE")
+    lines.append("  date   -> PostgreSQL DATE type (stored as 'YYYY-MM-DD')")
+    lines.append("  ALL year/season/month/day/recent/latest filters use date")
+    lines.append("  NEVER attempt to cast or convert date — it is already a DATE")
     lines.append("")
     lines.append("YEAR EXTRACTION (PostgreSQL ONLY):")
-    lines.append("  EXTRACT(YEAR FROM match_date)::int AS year   -- ALWAYS cast to int, ALWAYS alias as 'year'")
-    lines.append("  DATE_PART('year', match_date)                -- identical result")
-    lines.append("  TO_CHAR(match_date, 'YYYY')                  -- returns TEXT '2023', use for display only")
-    lines.append("  NEVER use: YEAR() / match_date.year / DATEPART(year,...)")
+    lines.append("  EXTRACT(YEAR FROM date)::int AS year   -- ALWAYS cast to int, ALWAYS alias as 'year'")
+    lines.append("  DATE_PART('year', date)                -- identical result")
+    lines.append("  TO_CHAR(date, 'YYYY')                  -- returns TEXT '2023', use for display only")
+    lines.append("  NEVER use: YEAR() / date.year / DATEPART(year,...)")
     lines.append("")
     lines.append("MONTH / DAY EXTRACTION:")
-    lines.append("  EXTRACT(MONTH FROM match_date)::int          -- integer 1-12")
-    lines.append("  EXTRACT(DAY FROM match_date)::int            -- integer 1-31")
-    lines.append("  TO_CHAR(match_date, 'Mon')                   -- 'Jan'..'Dec'")
-    lines.append("  TO_CHAR(match_date, 'YYYY-MM')               -- '2023-04' for monthly grouping")
+    lines.append("  EXTRACT(MONTH FROM date)::int          -- integer 1-12")
+    lines.append("  EXTRACT(DAY FROM date)::int            -- integer 1-31")
+    lines.append("  TO_CHAR(date, 'Mon')                   -- 'Jan'..'Dec'")
+    lines.append("  TO_CHAR(date, 'YYYY-MM')               -- '2023-04' for monthly grouping")
     lines.append("  NEVER use: MONTH() / DAY() -- MySQL syntax only")
     lines.append("")
     lines.append("RELATIVE DATE WINDOWS (PostgreSQL intervals):")
-    lines.append("  'last N years'   -> WHERE match_date >= CURRENT_DATE - INTERVAL 'N years'")
-    lines.append("  'last N months'  -> WHERE match_date >= CURRENT_DATE - INTERVAL 'N months'")
-    lines.append("  'last N days'    -> WHERE match_date >= CURRENT_DATE - INTERVAL 'N days'")
-    lines.append("  'this year'      -> WHERE EXTRACT(YEAR FROM match_date) = EXTRACT(YEAR FROM CURRENT_DATE)")
-    lines.append("  'last year'      -> WHERE EXTRACT(YEAR FROM match_date) = EXTRACT(YEAR FROM CURRENT_DATE) - 1")
-    lines.append("  'since YYYY'     -> WHERE match_date >= 'YYYY-01-01'::date")
-    lines.append("  'before YYYY'    -> WHERE match_date < 'YYYY-01-01'::date")
-    lines.append("  'in YYYY'        -> WHERE EXTRACT(YEAR FROM match_date) = YYYY")
-    lines.append("  'recent/latest'  -> ORDER BY match_date DESC LIMIT 10 (or 1)")
+    lines.append("  'last N years'   -> WHERE date >= CURRENT_DATE - INTERVAL 'N years'")
+    lines.append("  'last N months'  -> WHERE date >= CURRENT_DATE - INTERVAL 'N months'")
+    lines.append("  'last N days'    -> WHERE date >= CURRENT_DATE - INTERVAL 'N days'")
+    lines.append("  'this year'      -> WHERE EXTRACT(YEAR FROM date) = EXTRACT(YEAR FROM CURRENT_DATE)")
+    lines.append("  'last year'      -> WHERE EXTRACT(YEAR FROM date) = EXTRACT(YEAR FROM CURRENT_DATE) - 1")
+    lines.append("  'since YYYY'     -> WHERE date >= 'YYYY-01-01'::date")
+    lines.append("  'before YYYY'    -> WHERE date < 'YYYY-01-01'::date")
+    lines.append("  'in YYYY'        -> WHERE EXTRACT(YEAR FROM date) = YYYY")
+    lines.append("  'recent/latest'  -> ORDER BY date DESC LIMIT 10 (or 1)")
     lines.append("")
     lines.append("LAST N MATCHES — use CTE (NOT date arithmetic — matches are not daily):")
     lines.append("""
   WITH last_matches AS (
-    SELECT DISTINCT match_id, match_date
+    SELECT DISTINCT match, date
     FROM public.nv_play
     WHERE batter ILIKE '%name%'
-    ORDER BY match_date DESC
+    ORDER BY date DESC
     LIMIT 10
   )
   SELECT
-    p.match_date,
-    p.match_id,
-    SUM(p.runs_batter)                                                             AS runs,
+    p.date,
+    p.match,
+    SUM(p.runs)                                                             AS runs,
     COUNT(*) FILTER (WHERE p.legal_ball = TRUE)                                    AS balls,
-    ROUND((SUM(p.runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE p.legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND((SUM(p.runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE p.legal_ball=TRUE),0))*100,2) AS strike_rate,
     MAX(p.wicket)                                                                   AS dismissal
   FROM public.nv_play p
-  JOIN last_matches lm ON p.match_id = lm.match_id
+  JOIN last_matches lm ON p.match = lm.match
   WHERE p.batter ILIKE '%name%'
-  GROUP BY p.match_date, p.match_id
-  ORDER BY p.match_date DESC
+  GROUP BY p.date, p.match
+  ORDER BY p.date DESC
 """)
     lines.append("CORRECT INTERVAL SYNTAX:")
     lines.append("  CURRENT_DATE - INTERVAL '2 years'    -- correct")
@@ -615,35 +615,35 @@ def build_date_context():
     lines.append("YEARLY TREND PATTERN:")
     lines.append("""
   SELECT
-    EXTRACT(YEAR FROM match_date)::int                                              AS year,
-    COUNT(DISTINCT match_id)                                                        AS matches,
-    SUM(runs_batter)                                                                AS runs,
+    EXTRACT(YEAR FROM date)::int                                              AS year,
+    COUNT(DISTINCT match)                                                        AS matches,
+    SUM(runs)                                                                AS runs,
     COUNT(*) FILTER (WHERE legal_ball=TRUE)                                         AS balls,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
-    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average
   FROM public.nv_play
   WHERE batter ILIKE '%player%'
-  GROUP BY EXTRACT(YEAR FROM match_date)
+  GROUP BY EXTRACT(YEAR FROM date)
   ORDER BY year ASC
 """)
     lines.append("MONTHLY BREAKDOWN PATTERN:")
     lines.append("""
   SELECT
-    TO_CHAR(match_date, 'YYYY-MM')                                                  AS month,
-    COUNT(DISTINCT match_id)                                                        AS matches,
-    SUM(runs_batter)                                                                AS runs,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate
+    TO_CHAR(date, 'YYYY-MM')                                                  AS month,
+    COUNT(DISTINCT match)                                                        AS matches,
+    SUM(runs)                                                                AS runs,
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate
   FROM public.nv_play
   WHERE batter ILIKE '%player%'
-  GROUP BY TO_CHAR(match_date, 'YYYY-MM')
+  GROUP BY TO_CHAR(date, 'YYYY-MM')
   ORDER BY month ASC
 """)
     lines.append("NATURAL LANGUAGE -> SQL MAPPING:")
-    lines.append("  'every year / year by year'   -> GROUP BY EXTRACT(YEAR FROM match_date) ORDER BY year ASC")
-    lines.append("  'monthly breakdown'            -> GROUP BY TO_CHAR(match_date,'YYYY-MM') ORDER BY month ASC")
-    lines.append("  'last 5 matches'               -> CTE with LIMIT 5 on distinct match_ids DESC by match_date")
-    lines.append("  'this season / current year'   -> EXTRACT(YEAR FROM match_date) = EXTRACT(YEAR FROM CURRENT_DATE)")
-    lines.append("  'summer 2023'                  -> match_date BETWEEN '2023-04-01' AND '2023-09-30'")
+    lines.append("  'every year / year by year'   -> GROUP BY EXTRACT(YEAR FROM date) ORDER BY year ASC")
+    lines.append("  'monthly breakdown'            -> GROUP BY TO_CHAR(date,'YYYY-MM') ORDER BY month ASC")
+    lines.append("  'last 5 matches'               -> CTE with LIMIT 5 on distinct match DESC by date")
+    lines.append("  'this season / current year'   -> EXTRACT(YEAR FROM date) = EXTRACT(YEAR FROM CURRENT_DATE)")
+    lines.append("  'summer 2023'                  -> date BETWEEN '2023-04-01' AND '2023-09-30'")
     lines.append("")
     lines.append("ALWAYS: alias EXTRACT result as 'year' / 'month' / 'day'")
     lines.append("ALWAYS: ORDER BY time column ASC for trend queries")
@@ -662,198 +662,186 @@ def build_timestamp_context():
     lines.append("TIMESTAMP COLUMN RULES — READ EVERY LINE BEFORE WRITING ANY TIME-BASED SQL:")
     lines.append("")
     lines.append("COLUMN: timestamp")
-    lines.append("  Table  : public.nv_play")
-    lines.append("  Type   : TEXT stored as 'YYYYMMDD HH24:MI:SS.MS'")
-    lines.append("           Example value: '20230415 14:32:45.123'")
-    lines.append("  Purpose: Records the exact wall-clock moment each delivery was bowled.")
-    lines.append("           USE THIS COLUMN for ALL time/duration/pace-of-play questions.")
+    lines.append("  Table   : public.nv_play")
+    lines.append("  Type    : TIMESTAMP WITHOUT TIME ZONE (native PostgreSQL timestamp)")
+    lines.append("  Purpose : Records the exact wall-clock moment each delivery was bowled.")
+    lines.append("            USE THIS COLUMN for ALL time/duration/pace-of-play questions.")
     lines.append("")
-    lines.append("CASTING THE TIMESTAMP (PostgreSQL):")
-    lines.append("  TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')  -> returns TIMESTAMPTZ")
-    lines.append("  Always cast before doing any arithmetic or comparison:")
-    lines.append("    TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS') AS delivery_time")
-    lines.append("  NEVER compare raw TEXT timestamps with < > — always cast first.")
+    lines.append("⚠️  CRITICAL — DO NOT CALL TO_TIMESTAMP() ON THIS COLUMN:")
+    lines.append("  The column is ALREADY a TIMESTAMP type in PostgreSQL.")
+    lines.append("  Calling TO_TIMESTAMP(timestamp, 'format') will FAIL with:")
+    lines.append("    'function to_timestamp(timestamp without time zone, unknown) does not exist'")
+    lines.append("  CORRECT  : MIN(timestamp) AS first_ball_time")
+    lines.append("  CORRECT  : EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp)))")
+    lines.append("  WRONG    : TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')  <-- NEVER USE")
     lines.append("")
-    lines.append("COMMON TIME-BASED CALCULATIONS:")
+    lines.append("CORRECT COLUMN NAMES IN public.nv_play (critical — use exactly these):")
+    lines.append("  match       -- match identifier (NOT match_id)")
+    lines.append("  innings     -- innings number (NOT innings_number)")
+    lines.append("  over        -- over number (NOT over_number)")
+    lines.append("  ball        -- ball number within over (NOT ball_number)")
+    lines.append("  runs        -- batter runs (NOT runs_batter)")
+    lines.append("  extra_runs  -- extras (NOT runs_total; total = runs + extra_runs)")
+    lines.append("  date        -- match date (NOT match_date)")
+    lines.append("  timestamp   -- delivery timestamp, ALREADY a TIMESTAMP type")
     lines.append("")
-    lines.append("  1. TIME SPENT AT CREASE (batter duration):")
-    lines.append("     -- Difference between first and last ball faced by a batter in an innings")
-    lines.append("""
-  SELECT
-    batter,
-    match_id,
-    innings_number,
-    MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS first_ball_time,
-    MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS last_ball_time,
-    EXTRACT(EPOCH FROM (
-      MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
-      MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
-    )) / 60.0                                                        AS minutes_at_crease,
-    COUNT(*) FILTER (WHERE legal_ball = TRUE)                        AS balls_faced,
-    SUM(runs_batter)                                                  AS runs
-  FROM public.nv_play
-  WHERE batter ILIKE '%name%'
-    AND timestamp IS NOT NULL
-  GROUP BY batter, match_id, innings_number
-  ORDER BY minutes_at_crease DESC
-""")
-
-    lines.append("  2. OVER DURATION (time to bowl one over):")
-    lines.append("     -- Time from first to last ball of each over")
-    lines.append("""
-  SELECT
-    bowler,
-    match_id,
-    innings_number,
-    over_number,
-    MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS over_start,
-    MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS over_end,
-    EXTRACT(EPOCH FROM (
-      MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
-      MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
-    )) / 60.0                                                        AS over_duration_minutes,
-    COUNT(*) FILTER (WHERE legal_ball = TRUE)                        AS legal_balls_in_over
-  FROM public.nv_play
-  WHERE timestamp IS NOT NULL
-  GROUP BY bowler, match_id, innings_number, over_number
-  ORDER BY over_duration_minutes DESC
-""")
-
-    lines.append("  3. AVERAGE TIME PER OVER (by bowler — who bowls slowest):")
-    lines.append("""
-  WITH over_durations AS (
-    SELECT
-      bowler,
-      match_id,
-      innings_number,
-      over_number,
-      EXTRACT(EPOCH FROM (
-        MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
-        MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
-      )) / 60.0                                                      AS over_duration_minutes,
-      COUNT(*) FILTER (WHERE legal_ball = TRUE)                      AS legal_balls
-    FROM public.nv_play
-    WHERE timestamp IS NOT NULL
-    GROUP BY bowler, match_id, innings_number, over_number
-    HAVING COUNT(*) FILTER (WHERE legal_ball = TRUE) >= 6
-  )
-  SELECT
-    bowler,
-    COUNT(*)                                                         AS overs_bowled,
-    ROUND(AVG(over_duration_minutes)::numeric, 2)                   AS avg_minutes_per_over,
-    ROUND(MAX(over_duration_minutes)::numeric, 2)                   AS slowest_over_minutes,
-    ROUND(MIN(over_duration_minutes)::numeric, 2)                   AS fastest_over_minutes
-  FROM over_durations
-  GROUP BY bowler
-  HAVING COUNT(*) >= 5
-  ORDER BY avg_minutes_per_over DESC
-  LIMIT 20
-""")
-
-    lines.append("  4. TOTAL TIME SPENT AT CREASE (career — across all innings):")
+    lines.append("ECONOMY RATE FORMULA (correct):")
+    lines.append("  ROUND((SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6, 2)")
+    lines.append("")
+    lines.append("COMMON TIME-BASED SQL PATTERNS (copy these exactly):")
+    lines.append("")
+    lines.append("  1. TOTAL TIME AT CREASE — career leaderboard (who batted longest overall):")
     lines.append("""
   WITH innings_durations AS (
     SELECT
       batter,
-      match_id,
-      innings_number,
-      EXTRACT(EPOCH FROM (
-        MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
-        MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
-      )) / 60.0                                                      AS minutes_at_crease,
-      COUNT(*) FILTER (WHERE legal_ball = TRUE)                      AS balls_faced,
-      SUM(runs_batter)                                               AS runs
+      match,
+      innings,
+      EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) / 60.0   AS minutes_at_crease,
+      COUNT(*) FILTER (WHERE legal_ball = TRUE)                       AS balls_faced,
+      SUM(runs)                                                        AS innings_runs
     FROM public.nv_play
     WHERE timestamp IS NOT NULL
-    GROUP BY batter, match_id, innings_number
+      AND batter IS NOT NULL
+    GROUP BY batter, match, innings
+    HAVING COUNT(*) FILTER (WHERE legal_ball = TRUE) > 0
   )
   SELECT
     batter,
-    COUNT(*)                                                         AS innings,
-    ROUND(SUM(minutes_at_crease)::numeric, 2)                       AS total_minutes_at_crease,
-    ROUND(AVG(minutes_at_crease)::numeric, 2)                       AS avg_minutes_per_innings,
-    ROUND(MAX(minutes_at_crease)::numeric, 2)                       AS longest_innings_minutes,
-    SUM(balls_faced)                                                 AS total_balls_faced,
-    SUM(runs)                                                        AS total_runs
+    COUNT(*)                                                          AS total_innings,
+    ROUND(SUM(minutes_at_crease)::numeric, 2)                        AS total_minutes_at_crease,
+    ROUND(AVG(minutes_at_crease)::numeric, 2)                        AS avg_minutes_per_innings,
+    ROUND(MAX(minutes_at_crease)::numeric, 2)                        AS longest_innings_minutes,
+    SUM(balls_faced)                                                  AS total_balls_faced,
+    SUM(innings_runs)                                                 AS total_runs
   FROM innings_durations
   GROUP BY batter
   ORDER BY total_minutes_at_crease DESC
-  LIMIT 20
+  LIMIT 20;
 """)
 
-    lines.append("  5. TIME BETWEEN DELIVERIES (pace of play / bowling speed):")
+    lines.append("  2. LONGEST SINGLE INNINGS AT CREASE:")
     lines.append("""
-  WITH ball_times AS (
+  SELECT
+    batter,
+    match,
+    date,
+    innings,
+    SUM(runs)                                                         AS runs_scored,
+    COUNT(*) FILTER (WHERE legal_ball = TRUE)                         AS balls_faced,
+    ROUND(EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) / 60.0::numeric, 2)
+                                                                      AS minutes_at_crease
+  FROM public.nv_play
+  WHERE timestamp IS NOT NULL
+    AND batter IS NOT NULL
+  GROUP BY batter, match, date, innings
+  HAVING COUNT(*) FILTER (WHERE legal_ball = TRUE) > 0
+  ORDER BY minutes_at_crease DESC
+  LIMIT 20;
+""")
+
+    lines.append("  3. AVERAGE TIME PER OVER — who bowls slowest (over rate leaderboard):")
+    lines.append("""
+  WITH over_durations AS (
     SELECT
       bowler,
-      match_id,
-      innings_number,
-      over_number,
-      ball_number,
-      TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')             AS ball_time,
-      LAG(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
-        OVER (PARTITION BY match_id, innings_number
-              ORDER BY TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) AS prev_ball_time
+      match,
+      innings,
+      over,
+      EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) / 60.0   AS over_duration_minutes,
+      COUNT(*) FILTER (WHERE legal_ball = TRUE)                       AS legal_balls_in_over
+    FROM public.nv_play
+    WHERE timestamp IS NOT NULL
+      AND bowler IS NOT NULL
+    GROUP BY bowler, match, innings, over
+    HAVING COUNT(*) FILTER (WHERE legal_ball = TRUE) >= 6
+  )
+  SELECT
+    bowler,
+    COUNT(*)                                                          AS complete_overs_bowled,
+    ROUND(AVG(over_duration_minutes)::numeric, 2)                    AS avg_minutes_per_over,
+    ROUND(MAX(over_duration_minutes)::numeric, 2)                    AS slowest_over_minutes,
+    ROUND(MIN(over_duration_minutes)::numeric, 2)                    AS fastest_over_minutes
+  FROM over_durations
+  GROUP BY bowler
+  HAVING COUNT(*) >= 3
+  ORDER BY avg_minutes_per_over DESC
+  LIMIT 20;
+""")
+
+    lines.append("  4. TIME BETWEEN DELIVERIES (pace of play / how quickly a bowler bowls):")
+    lines.append("""
+  WITH ball_intervals AS (
+    SELECT
+      bowler,
+      match,
+      innings,
+      over,
+      ball,
+      timestamp                                                        AS ball_time,
+      LAG(timestamp) OVER (
+        PARTITION BY match, innings
+        ORDER BY timestamp
+      )                                                                AS prev_ball_time
     FROM public.nv_play
     WHERE timestamp IS NOT NULL
       AND legal_ball = TRUE
   )
   SELECT
     bowler,
-    COUNT(*)                                                         AS deliveries,
+    COUNT(*)                                                          AS deliveries_measured,
     ROUND(AVG(EXTRACT(EPOCH FROM (ball_time - prev_ball_time)))::numeric, 2)
-                                                                     AS avg_seconds_between_balls,
-    ROUND(MAX(EXTRACT(EPOCH FROM (ball_time - prev_ball_time)))::numeric, 2)
-                                                                     AS max_seconds_between_balls
-  FROM ball_times
+                                                                      AS avg_seconds_between_balls,
+    ROUND(MIN(EXTRACT(EPOCH FROM (ball_time - prev_ball_time)))::numeric, 2)
+                                                                      AS min_seconds_between_balls
+  FROM ball_intervals
   WHERE prev_ball_time IS NOT NULL
     AND EXTRACT(EPOCH FROM (ball_time - prev_ball_time)) BETWEEN 5 AND 300
   GROUP BY bowler
-  HAVING COUNT(*) >= 30
+  HAVING COUNT(*) >= 20
   ORDER BY avg_seconds_between_balls DESC
-  LIMIT 20
+  LIMIT 20;
 """)
 
-    lines.append("  6. MATCH DURATION (total time from first to last ball):")
+    lines.append("  5. INNINGS DURATION (total time for a full innings):")
     lines.append("""
   SELECT
-    match_id,
-    innings_number,
-    MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS innings_start,
-    MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))          AS innings_end,
-    ROUND(EXTRACT(EPOCH FROM (
-      MAX(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')) -
-      MIN(TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS'))
-    )) / 60.0 :: numeric, 2)                                        AS innings_duration_minutes,
-    COUNT(*) FILTER (WHERE legal_ball = TRUE)                        AS legal_balls,
-    SUM(runs_total)                                                   AS total_runs
+    match,
+    innings,
+    batting_team,
+    MIN(timestamp)                                                    AS innings_start,
+    MAX(timestamp)                                                    AS innings_end,
+    ROUND(EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) / 60.0::numeric, 2)
+                                                                      AS innings_duration_minutes,
+    COUNT(*) FILTER (WHERE legal_ball = TRUE)                         AS legal_balls,
+    SUM(runs + extra_runs)                                            AS total_runs
   FROM public.nv_play
   WHERE timestamp IS NOT NULL
-  GROUP BY match_id, innings_number
+  GROUP BY match, innings, batting_team
   ORDER BY innings_duration_minutes DESC
-  LIMIT 20
+  LIMIT 20;
 """)
 
     lines.append("TIMESTAMP SAFETY RULES:")
-    lines.append("  1. ALWAYS filter WHERE timestamp IS NOT NULL before using it")
-    lines.append("  2. ALWAYS cast with TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS') — never raw text")
-    lines.append("  3. ALWAYS use EXTRACT(EPOCH FROM ...) for duration arithmetic — gives seconds")
-    lines.append("  4. Divide by 60.0 for minutes, 3600.0 for hours")
-    lines.append("  5. When computing time between balls, filter out gaps > 300 seconds (5 min)")
-    lines.append("     to avoid counting innings breaks, lunch, or tea intervals")
-    lines.append("  6. HAVING COUNT(*) >= 6 on over duration ensures only complete overs are analysed")
-    lines.append("  7. Use LAG() window function for ball-to-ball interval calculations")
+    lines.append("  1. NEVER call TO_TIMESTAMP() — timestamp is already a TIMESTAMP type")
+    lines.append("  2. ALWAYS filter WHERE timestamp IS NOT NULL before using it")
+    lines.append("  3. ALWAYS use EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) for durations")
+    lines.append("  4. Divide EPOCH result by 60.0 for minutes, 3600.0 for hours")
+    lines.append("  5. When computing ball-to-ball gaps, filter: BETWEEN 5 AND 300 seconds")
+    lines.append("     to avoid counting drinks breaks, innings changeovers, or lunch intervals")
+    lines.append("  6. Use HAVING COUNT(*) FILTER (WHERE legal_ball = TRUE) >= 6 for complete overs only")
+    lines.append("  7. Use LAG(timestamp) window function for ball-to-ball interval calculations")
+    lines.append("  8. Always GROUP BY match, innings (not match_id, innings_number)")
+    lines.append("  9. Use 'runs' for batter runs, 'runs + extra_runs' for total delivery runs")
     lines.append("")
-    lines.append("NATURAL LANGUAGE -> TIMESTAMP SQL:")
-    lines.append("  'how long did X bat'         -> innings_durations CTE, SUM(minutes_at_crease) for batter X")
-    lines.append("  'longest time at crease'     -> total_minutes_at_crease DESC LIMIT 1")
-    lines.append("  'slowest over rate'          -> avg_minutes_per_over DESC — use pattern 3 above")
-    lines.append("  'how long to bowl an over'   -> avg_minutes_per_over DESC — use pattern 3 above")
-    lines.append("  'time taken to finish overs' -> avg_minutes_per_over DESC — use pattern 3 above")
-    lines.append("  'fastest bowler'             -> avg_seconds_between_balls ASC — use pattern 5")
-    lines.append("  'slowest bowler'             -> avg_seconds_between_balls DESC — use pattern 5")
-    lines.append("  'match duration'             -> innings_duration_minutes — use pattern 6")
-    lines.append("  'time between balls'         -> LAG() pattern 5 above")
+    lines.append("NATURAL LANGUAGE -> CORRECT SQL PATTERN:")
+    lines.append("  'who stayed longest at crease'   -> Pattern 1 above (total_minutes_at_crease DESC)")
+    lines.append("  'longest innings'                -> Pattern 2 above (single innings DESC)")
+    lines.append("  'slowest over rate'              -> Pattern 3 above (avg_minutes_per_over DESC)")
+    lines.append("  'who takes longest to bowl over' -> Pattern 3 above")
+    lines.append("  'time between deliveries'        -> Pattern 4 above (avg_seconds_between_balls)")
+    lines.append("  'innings duration'               -> Pattern 5 above (innings_duration_minutes)")
+    lines.append("  'match duration'                 -> Pattern 5 above grouped by match")
 
     return "\n".join(lines)
 
@@ -931,17 +919,17 @@ def build_advanced_patterns_context():
     lines.append("""
   SELECT
     batter,
-    COUNT(DISTINCT match_id)                                                        AS matches,
-    COUNT(DISTINCT match_id || '-' || innings_number)                               AS innings,
-    SUM(runs_batter)                                                                AS career_runs,
+    COUNT(DISTINCT match)                                                        AS matches,
+    COUNT(DISTINCT match || '-' || innings)                               AS innings,
+    SUM(runs)                                                                AS career_runs,
     COUNT(*) FILTER (WHERE legal_ball=TRUE)                                         AS career_balls,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)  AS career_sr,
-    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS career_avg,
-    COUNT(*) FILTER (WHERE runs_batter=4)                                           AS fours,
-    COUNT(*) FILTER (WHERE runs_batter=6)                                           AS sixes,
-    ROUND((COUNT(*) FILTER (WHERE runs_batter IN (4,6))::numeric
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)  AS career_sr,
+    ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS career_avg,
+    COUNT(*) FILTER (WHERE runs=4)                                           AS fours,
+    COUNT(*) FILTER (WHERE runs=6)                                           AS sixes,
+    ROUND((COUNT(*) FILTER (WHERE runs IN (4,6))::numeric
            / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)             AS boundary_pct,
-    ROUND((COUNT(*) FILTER (WHERE runs_total=0 AND legal_ball=TRUE)::numeric
+    ROUND((COUNT(*) FILTER (WHERE (runs + extra_runs) = 0 AND legal_ball=TRUE)::numeric
            / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)             AS dot_pct
   FROM public.nv_play
   WHERE batter ILIKE '%name%'
@@ -952,18 +940,18 @@ def build_advanced_patterns_context():
     lines.append("""
   SELECT
     batter,
-    SUM(runs_batter) FILTER (WHERE over_number BETWEEN 1  AND 6)                   AS pp_runs,
-    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 1  AND 6)        AS pp_balls,
-    ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 1  AND 6)::numeric
-           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 1  AND 6),0))*100,2) AS pp_sr,
-    SUM(runs_batter) FILTER (WHERE over_number BETWEEN 7  AND 15)                  AS mid_runs,
-    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 7  AND 15)       AS mid_balls,
-    ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 7  AND 15)::numeric
-           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 7  AND 15),0))*100,2) AS mid_sr,
-    SUM(runs_batter) FILTER (WHERE over_number BETWEEN 16 AND 20)                  AS death_runs,
-    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 16 AND 20)       AS death_balls,
-    ROUND((SUM(runs_batter) FILTER (WHERE over_number BETWEEN 16 AND 20)::numeric
-           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over_number BETWEEN 16 AND 20),0))*100,2) AS death_sr
+    SUM(runs) FILTER (WHERE over BETWEEN 1  AND 6)                   AS pp_runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 1  AND 6)        AS pp_balls,
+    ROUND((SUM(runs) FILTER (WHERE over BETWEEN 1  AND 6)::numeric
+           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 1  AND 6),0))*100,2) AS pp_sr,
+    SUM(runs) FILTER (WHERE over BETWEEN 7  AND 15)                  AS mid_runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 7  AND 15)       AS mid_balls,
+    ROUND((SUM(runs) FILTER (WHERE over BETWEEN 7  AND 15)::numeric
+           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 7  AND 15),0))*100,2) AS mid_sr,
+    SUM(runs) FILTER (WHERE over BETWEEN 16 AND 20)                  AS death_runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 16 AND 20)       AS death_balls,
+    ROUND((SUM(runs) FILTER (WHERE over BETWEEN 16 AND 20)::numeric
+           / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 16 AND 20),0))*100,2) AS death_sr
   FROM public.nv_play
   WHERE batter ILIKE '%name%'
   GROUP BY batter
@@ -972,24 +960,24 @@ def build_advanced_patterns_context():
     lines.append("3. RECENT FORM — last N matches (CTE):")
     lines.append("""
   WITH last_matches AS (
-    SELECT DISTINCT match_id, match_date
+    SELECT DISTINCT match, date
     FROM public.nv_play
     WHERE batter ILIKE '%name%'
-    ORDER BY match_date DESC
+    ORDER BY date DESC
     LIMIT 10
   )
   SELECT
-    p.match_date,
-    p.match_id,
-    SUM(p.runs_batter)                                                              AS runs,
+    p.date,
+    p.match,
+    SUM(p.runs)                                                              AS runs,
     COUNT(*) FILTER (WHERE p.legal_ball=TRUE)                                       AS balls,
-    ROUND((SUM(p.runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE p.legal_ball=TRUE),0))*100,2) AS sr,
+    ROUND((SUM(p.runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE p.legal_ball=TRUE),0))*100,2) AS sr,
     MAX(p.wicket)                                                                   AS dismissal
   FROM public.nv_play p
-  JOIN last_matches lm ON p.match_id = lm.match_id
+  JOIN last_matches lm ON p.match = lm.match
   WHERE p.batter ILIKE '%name%'
-  GROUP BY p.match_date, p.match_id
-  ORDER BY p.match_date DESC
+  GROUP BY p.date, p.match
+  ORDER BY p.date DESC
 """)
 
     lines.append("4. CONSISTENCY / INNINGS SCORE DISTRIBUTION:")
@@ -1008,10 +996,10 @@ def build_advanced_patterns_context():
     COUNT(*) AS innings_count,
     ROUND(COUNT(*)::numeric / NULLIF(SUM(COUNT(*)) OVER(),0)*100,2) AS pct
   FROM (
-    SELECT match_id, innings_number, batter, SUM(runs_batter) AS innings_runs
+    SELECT match, innings, batter, SUM(runs) AS innings_runs
     FROM public.nv_play
     WHERE batter ILIKE '%name%'
-    GROUP BY match_id, innings_number, batter
+    GROUP BY match, innings, batter
   ) t
   GROUP BY score_band
   ORDER BY MIN(innings_runs)
@@ -1021,11 +1009,11 @@ def build_advanced_patterns_context():
     lines.append("""
   SELECT
     bowling_team                                                                    AS opponent,
-    COUNT(DISTINCT match_id)                                                        AS matches,
-    SUM(runs_batter)                                                                AS runs,
+    COUNT(DISTINCT match)                                                        AS matches,
+    SUM(runs)                                                                AS runs,
     COUNT(*) FILTER (WHERE legal_ball=TRUE)                                         AS balls,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)  AS strike_rate,
-    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS average,
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)  AS strike_rate,
+    ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS average,
     COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                      AS dismissals
   FROM public.nv_play
   WHERE batter ILIKE '%name%'
@@ -1037,16 +1025,16 @@ def build_advanced_patterns_context():
     lines.append("""
   SELECT
     batter                                                                          AS player,
-    COUNT(DISTINCT match_id)                                                        AS matches,
-    SUM(runs_batter)                                                                AS runs,
+    COUNT(DISTINCT match)                                                        AS matches,
+    SUM(runs)                                                                AS runs,
     COUNT(*) FILTER (WHERE legal_ball=TRUE)                                         AS balls,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)  AS strike_rate,
-    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS average,
-    COUNT(*) FILTER (WHERE runs_batter=4)                                           AS fours,
-    COUNT(*) FILTER (WHERE runs_batter=6)                                           AS sixes,
-    ROUND((COUNT(*) FILTER (WHERE runs_total=0 AND legal_ball=TRUE)::numeric
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)  AS strike_rate,
+    ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS average,
+    COUNT(*) FILTER (WHERE runs=4)                                           AS fours,
+    COUNT(*) FILTER (WHERE runs=6)                                           AS sixes,
+    ROUND((COUNT(*) FILTER (WHERE (runs + extra_runs) = 0 AND legal_ball=TRUE)::numeric
            / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)             AS dot_pct,
-    ROUND((COUNT(*) FILTER (WHERE runs_batter IN (4,6))::numeric
+    ROUND((COUNT(*) FILTER (WHERE runs IN (4,6))::numeric
            / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2)             AS boundary_pct
   FROM public.nv_play
   WHERE batter ILIKE '%p1%' OR batter ILIKE '%p2%'
@@ -1056,32 +1044,32 @@ def build_advanced_patterns_context():
     lines.append("7. CHASE vs SETTING SPLIT:")
     lines.append("""
   SELECT
-    CASE WHEN innings_number = 1 THEN 'Setting' ELSE 'Chasing' END                 AS innings_type,
-    COUNT(DISTINCT match_id)                                                        AS matches,
-    SUM(runs_batter)                                                                AS runs,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
-    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average
+    CASE WHEN innings = 1 THEN 'Setting' ELSE 'Chasing' END                 AS innings_type,
+    COUNT(DISTINCT match)                                                        AS matches,
+    SUM(runs)                                                                AS runs,
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average
   FROM public.nv_play
   WHERE batter ILIKE '%name%'
-  GROUP BY innings_number
+  GROUP BY innings
 """)
 
     lines.append("8. OVER-BY-OVER RUN RATE AND WICKETS:")
     lines.append("""
   SELECT
-    over_number,
+    over,
     ROUND(AVG(over_runs),2)    AS avg_runs_per_over,
     SUM(over_wickets)          AS total_wickets,
     COUNT(*)                   AS sample_overs
   FROM (
-    SELECT match_id, innings_number, over_number,
-           SUM(runs_total)                                AS over_runs,
+    SELECT match, innings, over,
+           SUM(runs + extra_runs)                                AS over_runs,
            COUNT(*) FILTER (WHERE wicket IS NOT NULL)     AS over_wickets
     FROM public.nv_play
-    GROUP BY match_id, innings_number, over_number
+    GROUP BY match, innings, over
   ) t
-  GROUP BY over_number
-  ORDER BY over_number
+  GROUP BY over
+  ORDER BY over
 """)
 
     lines.append("9. DISMISSAL BREAKDOWN WITH %:")
@@ -1101,11 +1089,11 @@ def build_advanced_patterns_context():
   SELECT
     batter, bowler,
     COUNT(*) FILTER (WHERE legal_ball=TRUE)                                          AS balls,
-    SUM(runs_batter)                                                                 AS runs,
+    SUM(runs)                                                                 AS runs,
     COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                       AS dismissals,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS batter_sr,
-    COUNT(*) FILTER (WHERE runs_total=0 AND legal_ball=TRUE)                         AS dots,
-    COUNT(*) FILTER (WHERE runs_batter IN (4,6))                                     AS boundaries
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS batter_sr,
+    COUNT(*) FILTER (WHERE (runs + extra_runs) = 0 AND legal_ball=TRUE)                         AS dots,
+    COUNT(*) FILTER (WHERE runs IN (4,6))                                     AS boundaries
   FROM public.nv_play
   WHERE batter ILIKE '%batter_name%' AND bowler ILIKE '%bowler_name%'
   GROUP BY batter, bowler
@@ -1115,12 +1103,12 @@ def build_advanced_patterns_context():
     lines.append("""
   SELECT
     bowler,
-    COUNT(DISTINCT match_id)                                                        AS matches,
+    COUNT(DISTINCT match)                                                        AS matches,
     COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                      AS wickets,
     COUNT(*) FILTER (WHERE legal_ball=TRUE)                                         AS balls,
-    SUM(runs_total)                                                                 AS runs_conceded,
-    ROUND((SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6,2)    AS economy,
-    ROUND(SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS bowling_avg,
+    SUM(runs + extra_runs)                                                                 AS runs_conceded,
+    ROUND((SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6,2)    AS economy,
+    ROUND(SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS bowling_avg,
     ROUND(COUNT(*) FILTER (WHERE legal_ball=TRUE)::numeric
           / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)                AS bowling_sr
   FROM public.nv_play
@@ -1135,10 +1123,10 @@ def build_advanced_patterns_context():
   SELECT
     batting_position,
     COUNT(*) FILTER (WHERE legal_ball=TRUE)                                         AS balls,
-    SUM(runs_total)                                                                 AS runs_conceded,
+    SUM(runs + extra_runs)                                                                 AS runs_conceded,
     COUNT(*) FILTER (WHERE wicket IS NOT NULL)                                      AS wickets,
-    ROUND((SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6,2)    AS economy,
-    ROUND(SUM(runs_total)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS bowling_avg
+    ROUND((SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6,2)    AS economy,
+    ROUND(SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)     AS bowling_avg
   FROM public.nv_play
   WHERE bowler ILIKE '%name%'
   GROUP BY batting_position
@@ -1150,18 +1138,18 @@ def build_advanced_patterns_context():
   -- Top 20 all-format value players in last 30 days
   SELECT
     batter                                                                          AS player,
-    COUNT(DISTINCT match_id)                                                        AS matches,
-    SUM(runs_batter)                                                                AS runs,
-    COUNT(*) FILTER (WHERE runs_batter = 4)                                         AS fours,
-    COUNT(*) FILTER (WHERE runs_batter = 6)                                         AS sixes,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
-    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(DISTINCT match_id),0), 2)        AS avg_runs_per_match,
+    COUNT(DISTINCT match)                                                        AS matches,
+    SUM(runs)                                                                AS runs,
+    COUNT(*) FILTER (WHERE runs = 4)                                         AS fours,
+    COUNT(*) FILTER (WHERE runs = 6)                                         AS sixes,
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs)::numeric / NULLIF(COUNT(DISTINCT match),0), 2)        AS avg_runs_per_match,
     -- approximate fantasy points: runs + 4s*1 + 6s*2
-    (SUM(runs_batter) + COUNT(*) FILTER (WHERE runs_batter=4) + COUNT(*) FILTER (WHERE runs_batter=6)*2) AS approx_fantasy_pts
+    (SUM(runs) + COUNT(*) FILTER (WHERE runs=4) + COUNT(*) FILTER (WHERE runs=6)*2) AS approx_fantasy_pts
   FROM public.nv_play
-  WHERE match_date >= CURRENT_DATE - INTERVAL '30 days'
+  WHERE date >= CURRENT_DATE - INTERVAL '30 days'
   GROUP BY batter
-  HAVING COUNT(DISTINCT match_id) >= 3
+  HAVING COUNT(DISTINCT match) >= 3
   ORDER BY approx_fantasy_pts DESC
   LIMIT 20
 """)
@@ -1170,10 +1158,10 @@ def build_advanced_patterns_context():
     lines.append("""
   SELECT
     venue,
-    COUNT(DISTINCT match_id)                                                        AS matches,
-    SUM(runs_batter)                                                                AS runs,
-    ROUND((SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
-    ROUND(SUM(runs_batter)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average
+    COUNT(DISTINCT match)                                                        AS matches,
+    SUM(runs)                                                                AS runs,
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS strike_rate,
+    ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2)    AS average
   FROM public.nv_play
   WHERE batter ILIKE '%name%'
   GROUP BY venue
@@ -1183,20 +1171,20 @@ def build_advanced_patterns_context():
     lines.append("15. MILESTONE COUNTING:")
     lines.append("""
   SELECT
-    EXTRACT(YEAR FROM match_date)::int AS year,
+    EXTRACT(YEAR FROM date)::int AS year,
     COUNT(*) FILTER (WHERE innings_runs >= 100)  AS centuries,
     COUNT(*) FILTER (WHERE innings_runs >= 50 AND innings_runs < 100) AS fifties,
     COUNT(*) FILTER (WHERE innings_runs = 0)     AS ducks,
     COUNT(*)                                     AS innings
   FROM (
-    SELECT match_id, innings_number, batter,
-           match_date,
-           SUM(runs_batter) AS innings_runs
+    SELECT match, innings, batter,
+           date,
+           SUM(runs) AS innings_runs
     FROM public.nv_play
     WHERE batter ILIKE '%name%'
-    GROUP BY match_id, innings_number, batter, match_date
+    GROUP BY match, innings, batter, date
   ) t
-  GROUP BY EXTRACT(YEAR FROM match_date)
+  GROUP BY EXTRACT(YEAR FROM date)
   ORDER BY year
 """)
 
@@ -1480,7 +1468,30 @@ def clean_sql(sql_query):
     sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
     sql_query = " ".join(sql_query.split())
 
-    # ---- Wicket boolean fixes ----
+    # ---- Auto-correct common wrong column name hallucinations ----
+    # These map old names the LLM was trained on to the actual schema column names
+    col_fixes = [
+        (r'\bmatch_id\b',       'match'),
+        (r'\binnings_number\b', 'innings'),
+        (r'\bover_number\b',    'over'),
+        (r'\bball_number\b',    'ball'),
+        (r'\bruns_batter\b',    'runs'),
+        (r'\bmatch_date\b',     'date'),
+    ]
+    for pattern, replacement in col_fixes:
+        sql_query = re.sub(pattern, replacement, sql_query, flags=re.IGNORECASE)
+
+    # ---- runs_total: replace with (runs + extra_runs) in SUM contexts ----
+    sql_query = re.sub(r'\bSUM\s*\(\s*runs_total\s*\)', 'SUM(runs + extra_runs)', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'\bruns_total\b', '(runs + extra_runs)', sql_query, flags=re.IGNORECASE)
+
+    # ---- Remove TO_TIMESTAMP() wrapping on timestamp column (already TIMESTAMP type) ----
+    sql_query = re.sub(
+        r"TO_TIMESTAMP\s*\(\s*timestamp\s*,\s*'[^']+'\s*\)",
+        'timestamp',
+        sql_query,
+        flags=re.IGNORECASE
+    )
     for wrong, right in [
         ("wicket = TRUE",  "wicket IS NOT NULL"),
         ("wicket=TRUE",    "wicket IS NOT NULL"),
@@ -1647,7 +1658,7 @@ CRITICAL COLUMN RULES:
   wicket is TEXT: dismissed -> wicket IS NOT NULL | not out -> wicket IS NULL | specific -> wicket = 'Caught'
   NEVER: wicket = TRUE / FALSE / 1 / 0
   Booleans TRUE/FALSE: legal_ball, free_hit, around_the_wicket, keeper_up
-  Runs ALWAYS aggregate: one row = one ball. Strike rate = (SUM(runs_batter)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100
+  Runs ALWAYS aggregate: one row = one ball. Strike rate = (SUM(runs)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100
   Names: ILIKE '%name%' always. Schema columns only. Pure PostgreSQL.
 
 QUERY DESIGN RULES:
@@ -1657,10 +1668,10 @@ QUERY DESIGN RULES:
   4. NULLIF(..., 0) on EVERY denominator.
   5. LIMIT 15-20 for open leaderboards; no LIMIT for named entities.
   6. ORDER BY most informative column. Time: ORDER BY year ASC.
-  7. COUNT(DISTINCT match_id) AS matches for match counts.
+  7. COUNT(DISTINCT match) AS matches for match counts.
   8. FILTER (WHERE ...) for phase splits in one query.
   9. CTEs for recent form, ranked matches, percentages.
-  10. EXTRACT(YEAR FROM match_date)::int AS year — always.
+  10. EXTRACT(YEAR FROM date)::int AS year — always.
 
 HAVING THRESHOLD RULE:
   APPLY only for open leaderboards (no specific entity named):
@@ -1783,10 +1794,14 @@ FORMAT RULES: {format_context}
 Return ONLY raw SQL, no markdown, no backticks, no explanation.
 Rules: SELECT only | PostgreSQL syntax | Schema columns only | wicket IS NOT NULL for dismissals
 | legal_ball/free_hit/around_the_wicket/keeper_up are BOOLEAN | ROUND(x::numeric,2) | NULLIF(x,0)
-| ILIKE '%name%' | NO HAVING | EXTRACT(YEAR FROM match_date)::int AS year | NO YEAR()/MONTH()/DATEADD()
-| SR = (SUM(runs_batter)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100
-| Economy = (SUM(runs_total)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6
-| For time questions: TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS') and EXTRACT(EPOCH FROM ...)
+| ILIKE '%name%' | NO HAVING | EXTRACT(YEAR FROM date)::int AS year | NO YEAR()/MONTH()/DATEADD()
+| SR = (SUM(runs)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100
+| Economy = (SUM(runs + extra_runs)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6
+| For time questions: timestamp is already TIMESTAMP type — use MIN(timestamp)/MAX(timestamp) directly
+| EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) gives seconds — divide by 60 for minutes
+| Correct columns: match (NOT match_id) | innings (NOT innings_number) | over (NOT over_number)
+|   ball (NOT ball_number) | runs (NOT runs_batter) | date (NOT match_date)
+| NEVER call TO_TIMESTAMP(timestamp, ...) — timestamp is already a TIMESTAMP, not TEXT
 
 QUESTION: {question}
 """
@@ -2184,7 +2199,7 @@ Example: Economy Rate — ODI: Elite <4.0 | Excellent 4.0-4.79 | Good 4.8-5.49 |
 Include one benchmark line for every metric that appears in the Key Numbers table.
 
 **📅 Data Coverage**
-State the earliest and latest match_date visible in the data.
+State the earliest and latest date visible in the data.
 State which competitions or tournaments are covered if identifiable from the data.
 Flag any obvious gaps — e.g. "Only 2 seasons visible; career may extend beyond this window."
 If dates are not in the data, write: "Date range not available in current result set."
@@ -2248,7 +2263,7 @@ def generate_chart_config(question, query_results, intent: dict = None):
     if is_compare:
         hints += "COMPARE: 2-5 entities, 2+ metrics -> 'bar'. 2-4 entities, 4-6 metrics -> 'radar'\n"
     if is_over:
-        hints += "OVER-BY-OVER: over_number on x-axis -> 'line'. x_key='over_number'\n"
+        hints += "OVER-BY-OVER: over on x-axis -> 'line'. x_key='over'\n"
     if is_dismissal:
         hints += "DISMISSAL: types as categories -> 'pie' (pct) or 'bar_colored' (count)\n"
     if is_dist:
@@ -2270,7 +2285,7 @@ HINTS FOR THIS QUERY:
 CHART TYPES:
   bar         : Multi-metric comparison (2+ y_keys). Max 12 rows.
   bar_colored : Single-metric leaderboard, each bar different colour. Max 15 rows.
-  line        : Time/ordered trend (year, over_number). Max 25 rows.
+  line        : Time/ordered trend (year, over). Max 25 rows.
   area        : Cumulative volume trend. Max 25 rows.
   pie         : Distribution / share of whole. 1 y_key. 3-8 categories.
   radar       : Multi-dimension profile. 2-4 entities, 4-6 metrics. Max 4 rows.
@@ -2279,7 +2294,7 @@ SELECTION PRIORITY:
 1. year/time + 1 metric                     -> line
 2. year/time + 2+ metrics                   -> bar
 3. year/time + cumulative volume            -> area
-4. over_number ordered                      -> line
+4. over ordered                      -> line
 5. dismissal/score band distribution        -> pie (pct) or bar_colored (count)
 6. phase breakdown (PP/Mid/Death)           -> bar
 7. compare N entities on 1 metric           -> bar_colored
@@ -2292,7 +2307,7 @@ SELECTION PRIORITY:
 14. no numeric columns                      -> null
 
 DATA RULES:
-- x_key: string, category, or integer (year/over_number)
+- x_key: string, category, or integer (year/over)
 - y_keys: NUMERIC only. Exclude text columns, IDs, non-numeric identifiers.
 - Do NOT include columns that would visually dwarf others (total_balls alongside strike_rate)
 - Use the first/most relevant query result when multiple exist
