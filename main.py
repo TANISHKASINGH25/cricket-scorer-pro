@@ -2182,21 +2182,18 @@ Single most important finding. Forward-looking recommendation.
 ### ℹ️ Additional Context
 
 ⚠️ THIS SECTION IS MANDATORY. YOU MUST WRITE IT. DO NOT SKIP IT. DO NOT END THE RESPONSE AFTER THE VERDICT.
-Every sub-heading below must appear verbatim. Fill in each one using the data provided.
+Every sub-heading below must appear verbatim in this exact order. Fill in each one using the data provided.
 If a field cannot be determined from the data, write "Not available from current data" — do NOT omit the heading.
 
-**📋 Format & Sample**
-State the cricket format this analysis covers. Derive it from the match_type values in the data.
-If match_type is not in the data, state "Format not specified in data — benchmarks applied conservatively."
-State the exact sample size: total balls faced or bowled, total innings, total matches.
-State whether the sample is sufficient (High: 200+ balls / 15+ innings), moderate (Medium: 80-199 balls / 8-14 innings), or limited (Low: <80 balls / <8 innings) and what that means for reliability.
-
-**📐 Benchmarks Used**
-List the exact benchmark thresholds used to produce every tier label in this report.
-Format each line as: [Metric] — [Format]: [tier thresholds]
-Example: Strike Rate — T20: Poor <110 | Average 110-124 | Good 125-139 | Excellent 140-159 | Elite >160
-Example: Economy Rate — ODI: Elite <4.0 | Excellent 4.0-4.79 | Good 4.8-5.49 | Average 5.5-5.99 | Poor >6.0
-Include one benchmark line for every metric that appears in the Key Numbers table.
+**🎯 Query Context**
+This section must directly relate to what the user actually asked — not generic cricket facts.
+Start by restating the user's question in one sentence in your own words.
+Then explain: what type of analysis was performed to answer it (career summary / phase split / time-based / comparison / leaderboard / etc.).
+State the cricket format derived from match_type in the data. If match_type is missing, state "Format not confirmed from data."
+State the exact sample size relevant to the question: total balls / innings / matches / overs — whichever is most meaningful.
+State whether the sample gives a reliable answer (sufficient: 200+ balls or 15+ innings) or a partial one (limited: <80 balls or <8 innings), and what that means specifically for this question.
+Example for a crease-time question: "You asked which batter spent the longest at the crease. This was answered using wall-clock timestamps across all innings. Jack Boyle leads with 94.3 minutes across 8 innings in Timed cricket — a moderate sample that gives reliable career-level conclusions but may not capture the full picture if further matches exist outside this dataset."
+Example for a bowling question: "You asked which bowler has the slowest over rate. This was calculated from average over duration in minutes using delivery timestamps. The analysis covers 50 Over cricket across 14 bowlers with at least 3 complete overs."
 
 **📅 Data Coverage**
 State the earliest and latest date visible in the data.
@@ -2204,30 +2201,43 @@ State which competitions or tournaments are covered if identifiable from the dat
 Flag any obvious gaps — e.g. "Only 2 seasons visible; career may extend beyond this window."
 If dates are not in the data, write: "Date range not available in current result set."
 
-**🔗 Related Analyses**
-Name exactly 2 follow-up analyses that would add the most useful context given what was asked.
-Frame each as a direct question the user could ask next.
-Example: "Phase breakdown: How does this player's strike rate split across powerplay, middle overs, and death overs?"
-Example: "Recent form: Has performance improved or declined across the last 10 matches?"
-Choose the 2 most analytically relevant follow-ups — not generic ones.
+**📐 Benchmarks Used**
+List the exact benchmark thresholds used to produce every tier label in this report.
+Format each line as: [Metric] — [Format]: [tier thresholds]
+Example: Strike Rate — T20: Poor <110 | Average 110-124 | Good 125-139 | Excellent 140-159 | Elite >160
+Example: Economy Rate — ODI: Elite <4.0 | Excellent 4.0-4.79 | Good 4.8-5.49 | Average 5.5-5.99 | Poor >6.0
+Include one benchmark line for every metric that appears in the Key Numbers table.
+If the question is time-based (duration, pace of play) and no standard cricket benchmark applies, state: "No standard tier benchmarks apply to this metric — results ranked relative to the dataset."
 
-**🎯 Confidence Assessment**
-State confidence as one of: 🟢 High | 🟡 Medium | 🔴 Low
-Justify the rating with the sample size and pattern consistency observed.
-State one specific thing that would upgrade the confidence level.
-Example: "🔴 Low — 80 balls is insufficient for reliable T20 SR conclusions. Confidence upgrades to Medium with 200+ balls faced."
+**📝 Summary**
+Write 3-5 sentences that give a concise plain-English answer to exactly what the user asked.
+This should read like a one-paragraph briefing — not a repeat of the Deep Analysis.
+Lead with the direct answer to the question (the number, the name, the finding).
+Follow with the single most important supporting fact.
+Close with one forward-looking or contextual note relevant to the question.
+Example for a crease-time question: "Jack Boyle has spent the most time at the crease, accumulating 94.3 minutes across 8 innings — nearly double the next-highest batter. His 622 balls faced in Timed cricket reflects a deeply conservative, anchor-style approach. The timestamp data confirms this is genuine time on the field, not merely a balls-faced proxy."
+Example for a bowler question: "Benjamin Twine takes the longest on average to complete an over at 4.2 minutes per over across 27 overs in 50 Over cricket. This is likely driven by his high number of legal deliveries per over including extras, not deliberate slow play. Monitoring his over rate against match requirements would be advisable for team management."
+
+**🔗 Related Analyses**
+Name exactly 2 follow-up analyses that would add the most useful context given what was specifically asked.
+Frame each as a direct question the user could ask next — make them specific to the entities and format in the data.
+Do NOT suggest generic analyses — tailor them to the actual question and players/teams involved.
+Example for a crease-time question: "Phase breakdown: How does Jack Boyle's time at crease distribute across powerplay, middle overs, and death overs — is he consuming more time in one phase?"
+Example for a bowler question: "Economy by over duration: Do bowlers with slower over rates concede fewer or more runs — is there a correlation between pace of play and economy rate in this dataset?"
 
 ---
 
 HARD OUTPUT RULES — VIOLATIONS ARE NOT ACCEPTABLE:
-1. The response MUST contain all 5 sections of ### ℹ️ Additional Context — every heading must appear
+1. The response MUST contain all 5 sections of ### ℹ️ Additional Context — every heading must appear in order
 2. NEVER end the response after ### 💡 Verdict — the Additional Context section always follows
 3. NEVER assume T20 — derive format from match_type in the data; if unknown, state "format unknown"
 4. Apply format-correct benchmarks: T20 SR elite >160 | ODI SR elite >110 | Test avg elite >55
 5. Every tier label (Elite/Excellent/Good/Average/Below Par) must cite the benchmark that produced it
-6. Exact numbers for every claim — no approximations, no hedging
-7. Cricket terminology only — never mention SQL, database, queries, tables, or columns
-8. 800-1500 words total across all sections
+6. 🎯 Query Context must directly reference the user's actual question — not generic format information
+7. 📝 Summary must lead with the direct answer (name/number/finding) in the first sentence
+8. 🔗 Related Analyses must be specific to the actual entities in the data — not generic suggestions
+9. Cricket terminology only — never mention SQL, database, queries, tables, or columns
+10. 800-1500 words total across all sections
 """
 
     return llm(prompt)
