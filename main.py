@@ -1,3 +1,4 @@
+'''
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -2546,6 +2547,2040 @@ Explain in 3-4 clear sentences:
 1. What cricket analysis this question is asking for
 2. Which players/teams/formats are involved
 3. What data dimensions will be analysed (phase, form, comparison, etc.)
+4. What the key insight will be
+
+Be specific. Use cricket domain language. No SQL, no database language.
+"""
+        explanation = llm(prompt)
+
+        return {
+            "question":        req.question,
+            "intent_summary":  summary,
+            "intent_flags":    {k: v for k, v in intent.items() if v is True},
+            "explanation":     explanation
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    
+'''
+
+
+
+from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
+import os
+import re
+import json
+import uuid
+import psycopg2
+import psycopg2.extras
+
+import vertexai
+from vertexai.generative_models import GenerativeModel
+
+from schema_context import NV_PLAY_DICTIONARY
+from derived_metrics import DERIVED_METRICS
+from cricket_rules import CRICKET_RULES
+
+
+# =========================================================
+# LOAD ENV VARIABLES
+# =========================================================
+
+load_dotenv()
+
+# =========================================================
+# APP VERSION
+# =========================================================
+
+APP_VERSION = "2.0.0"
+
+# =========================================================
+# VERTEX AI SETUP  (unchanged — do not modify)
+# =========================================================
+
+vertexai.init(
+    project=os.getenv("GCP_PROJECT"),
+    location=os.getenv("GCP_LOCATION", "us-central1")
+)
+
+model = GenerativeModel("gemini-2.5-flash")
+
+# =========================================================
+# FASTAPI APP
+# =========================================================
+
+app = FastAPI()
+
+# =========================================================
+# ENABLE CORS
+# =========================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =========================================================
+# DATABASE CONNECTION  (unchanged pattern)
+# =========================================================
+
+def get_db_connection():
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        database=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        connect_timeout=10
+    )
+
+
+# =========================================================
+# AUTHENTICATION DEPENDENCY
+# ─────────────────────────────────────────────────────────
+# The main cricket application already authenticated the
+# user. It passes the user_id via the X-User-Id header.
+# This function validates it and returns the UUID string.
+#
+# NEVER creates users. NEVER checks the users table.
+# Simply trusts the identity the main app provides.
+# =========================================================
+
+def get_current_user(x_user_id: str = Header(...)) -> str:
+    """
+    Extracts and validates the authenticated user_id from
+    the X-User-Id header sent by the main cricket app.
+
+    Raises 401 if the header is missing or not a valid UUID.
+    """
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="X-User-Id header is required.")
+    try:
+        # Validate it is a proper UUID — reject garbage values
+        uuid.UUID(x_user_id)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="X-User-Id must be a valid UUID.")
+    return x_user_id
+
+
+# =========================================================
+# REQUEST / RESPONSE MODELS
+# =========================================================
+
+class QueryRequest(BaseModel):
+    question: str
+    conversation_id: str          # UUID — must exist and belong to the user
+
+
+class NewConversationRequest(BaseModel):
+    title: str = "New Chat"       # Optional; auto-set from first question if omitted
+
+
+# =========================================================
+# ─────────────────────────────────────────────────────────
+# CONVERSATION REPOSITORY
+# All DB operations for the conversations table.
+# Follows the same psycopg2 pattern as the rest of the app.
+# ─────────────────────────────────────────────────────────
+# =========================================================
+
+class ConversationRepository:
+
+    # ── Create ────────────────────────────────────────────
+
+    @staticmethod
+    def create(user_id: str, title: str = "New Chat") -> dict:
+        """
+        Insert a new conversation row.
+        Returns the full row as a dict.
+        """
+        conn   = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cursor.execute(
+                """
+                INSERT INTO public.conversations (user_id, title)
+                VALUES (%s, %s)
+                RETURNING conversation_id, user_id, title, created_at, updated_at
+                """,
+                (user_id, title)
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return dict(row)
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ── List for user ─────────────────────────────────────
+
+    @staticmethod
+    def list_for_user(user_id: str) -> list:
+        """
+        Return all conversations for a user, newest first.
+        Only returns conversations that BELONG to this user.
+        """
+        conn   = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cursor.execute(
+                """
+                SELECT conversation_id, user_id, title, created_at, updated_at
+                FROM   public.conversations
+                WHERE  user_id = %s
+                ORDER  BY updated_at DESC
+                """,
+                (user_id,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ── Get single (with ownership check) ─────────────────
+
+    @staticmethod
+    def get(conversation_id: str, user_id: str) -> dict | None:
+        """
+        Fetch a single conversation.
+        Returns None if it doesn't exist OR belongs to a different user.
+        """
+        conn   = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cursor.execute(
+                """
+                SELECT conversation_id, user_id, title, created_at, updated_at
+                FROM   public.conversations
+                WHERE  conversation_id = %s
+                  AND  user_id = %s
+                """,
+                (conversation_id, user_id)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ── Update title ──────────────────────────────────────
+
+    @staticmethod
+    def update_title(conversation_id: str, user_id: str, title: str) -> bool:
+        """
+        Update the conversation title.
+        Only succeeds if the conversation belongs to this user.
+        """
+        conn   = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE public.conversations
+                SET    title      = %s,
+                       updated_at = NOW()
+                WHERE  conversation_id = %s
+                  AND  user_id = %s
+                """,
+                (title, conversation_id, user_id)
+            )
+            updated = cursor.rowcount > 0
+            conn.commit()
+            return updated
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ── Delete ────────────────────────────────────────────
+
+    @staticmethod
+    def delete(conversation_id: str, user_id: str) -> bool:
+        """
+        Delete a conversation and all its messages (CASCADE).
+        Only succeeds if the conversation belongs to this user.
+        """
+        conn   = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                DELETE FROM public.conversations
+                WHERE  conversation_id = %s
+                  AND  user_id = %s
+                """,
+                (conversation_id, user_id)
+            )
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            return deleted
+        finally:
+            cursor.close()
+            conn.close()
+
+
+# =========================================================
+# ─────────────────────────────────────────────────────────
+# CHAT REPOSITORY
+# All DB operations for the chat_messages table.
+# ─────────────────────────────────────────────────────────
+# =========================================================
+
+class ChatRepository:
+
+    # ── Save a message ────────────────────────────────────
+
+    @staticmethod
+    def save_message(
+        conversation_id: str,
+        question: str,
+        generated_sql: str,
+        sql_result: list,
+        answer: str,
+        answer_summary: str
+    ) -> dict:
+        """
+        Persist a full Q&A exchange into chat_messages.
+        The DB trigger automatically updates conversations.updated_at.
+        Returns the saved row.
+        """
+        conn   = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cursor.execute(
+                """
+                INSERT INTO public.chat_messages
+                    (conversation_id, question, generated_sql, sql_result, answer, answer_summary)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s)
+                RETURNING message_id, conversation_id, question, answer, created_at
+                """,
+                (
+                    conversation_id,
+                    question,
+                    generated_sql,
+                    json.dumps(sql_result, default=str),
+                    answer,
+                    answer_summary
+                )
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return dict(row)
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ── Load messages for a conversation ──────────────────
+
+    @staticmethod
+    def get_messages(conversation_id: str, user_id: str) -> list:
+        """
+        Load all messages for a conversation.
+        Verifies ownership via JOIN with conversations table —
+        a user can NEVER read another user's messages.
+        """
+        conn   = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    m.message_id,
+                    m.conversation_id,
+                    m.question,
+                    m.generated_sql,
+                    m.sql_result,
+                    m.answer,
+                    m.answer_summary,
+                    m.created_at
+                FROM   public.chat_messages m
+                JOIN   public.conversations c
+                         ON c.conversation_id = m.conversation_id
+                WHERE  m.conversation_id = %s
+                  AND  c.user_id = %s
+                ORDER  BY m.created_at ASC
+                """,
+                (conversation_id, user_id)
+            )
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                # sql_result is stored as JSONB — psycopg2 returns it as a Python object already
+                if d.get("sql_result") and isinstance(d["sql_result"], str):
+                    try:
+                        d["sql_result"] = json.loads(d["sql_result"])
+                    except Exception:
+                        pass
+                result.append(d)
+            return result
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ── Load recent context for session memory ─────────────
+
+    @staticmethod
+    def get_recent_context(conversation_id: str, user_id: str, limit: int = 4) -> list:
+        """
+        Load the last N Q&A pairs from a conversation to build
+        session context for the Gemini prompt — equivalent to
+        the old session_context list the frontend used to send.
+
+        Returns [{question, summary}] matching the existing
+        build_session_context() format exactly.
+        """
+        conn   = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cursor.execute(
+                """
+                SELECT m.question, m.answer_summary
+                FROM   public.chat_messages m
+                JOIN   public.conversations c
+                         ON c.conversation_id = m.conversation_id
+                WHERE  m.conversation_id = %s
+                  AND  c.user_id = %s
+                ORDER  BY m.created_at DESC
+                LIMIT  %s
+                """,
+                (conversation_id, user_id, limit)
+            )
+            rows = cursor.fetchall()
+            # Reverse so oldest is first (chronological order for context)
+            return [
+                {"question": row["question"], "summary": row["answer_summary"] or ""}
+                for row in reversed(rows)
+            ]
+        finally:
+            cursor.close()
+            conn.close()
+
+
+# =========================================================
+# VERTEX LLM CALL  (unchanged — do not modify)
+# =========================================================
+
+def llm(prompt: str) -> str:
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
+# =========================================================
+# INTENT CLASSIFICATION
+# =========================================================
+
+def classify_intent(question: str) -> dict:
+    q = question.lower()
+
+    is_batting    = any(w in q for w in ["bat","runs","strike rate","average","century","fifty","boundary","four","six","scorer","openers","batting","innings","batter"])
+    is_bowling    = any(w in q for w in ["bowl","wicket","economy","dot ball","yorker","delivery","spin","pace","seam","swing","bowler","bowling"])
+    is_fielding   = any(w in q for w in ["catch","field","run out","direct hit","dropped","boundary save","fielder"])
+    is_team       = any(w in q for w in ["team","squad","side","xi","playing eleven","franchise"])
+    is_h2h        = any(w in q for w in ["head to head","h2h","matchup","batter vs bowler","vs bowler","vs batter"])
+    is_allrounder = any(w in q for w in ["all-rounder","allrounder","all rounder","both bat and bowl"])
+
+    is_form        = any(w in q for w in ["recent","last ","form","current form","in form","last 5","last 10","last 10 matches","this year","this season","current"])
+    is_trend       = any(w in q for w in ["year","season","annual","trend","every year","each year","monthly","over time","progression","history","since","before","2021","2022","2023","2024","2025"])
+    is_phase       = any(w in q for w in ["powerplay","pp ","middle over","death over","slog","phase","over 1","over 6","over 16","over 20","first 6","last 5 overs","overs 1","overs 16"])
+    is_comparison  = any(w in q for w in [" vs "," versus ","compare","comparison","between","better","worse","who is better","which team","both","two players","two teams"])
+    is_opponent    = any(w in q for w in ["against ","opponent","facing","when bowling to","when batting against","matchup","bogey","favourite opponent"])
+    is_consistency = any(w in q for w in ["consistent","consistency","reliable","duck","fifty","century","milestone","how often","score distribution"])
+    is_chase       = any(w in q for w in ["chase","chasing","run chase","target","second innings","batting second","defending","first innings","batting first","setting"])
+    is_pressure    = any(w in q for w in ["pressure","clutch","crunch","crucial","eliminate","final","knockout","must win"])
+    is_leaderboard = any(w in q for w in ["top","best","highest","most","ranking","rank","leaderboard","who has most","who scored most","who took most"])
+    is_milestone   = any(w in q for w in ["century","centuries","hundred","50s","fifties","duck","golden duck","hat-trick","five-for","5 wickets","ten wickets","milestone"])
+    is_over_by_over= any(w in q for w in ["over by over","each over","per over","over number","which over","best over"])
+    is_venue       = any(w in q for w in ["venue","ground","stadium","pitch","home","away"])
+    is_fantasy     = any(w in q for w in ["fantasy","dream11","dream 11","pick","differential","captain","vice captain","points"])
+    is_predictive  = any(w in q for w in ["predict","likely","probability","expect","forecast","will","chances","should i pick"])
+    is_time_based  = any(w in q for w in [
+        "time","duration","how long","longest","slowest","fastest","minutes","seconds","hours",
+        "pace of play","over rate","time per over","time taken","took longest","crease time",
+        "time spent","how much time","elapsed","between deliveries","delay","slow over rate"
+    ])
+
+    fmt_t20  = any(w in q for w in ["t20","t-20","ipl","bbl","psl","cpl","sa20","hundred","the hundred"])
+    fmt_odi  = any(w in q for w in ["odi","one day","one-day","50 over","50-over","list a","world cup odi"])
+    fmt_test = any(w in q for w in ["test","red ball","test match","test cricket","test series"])
+
+    def extract_player_names(text):
+        keywords = {"how","what","when","which","who","where","best","top","most","has","does",
+                    "in","at","against","for","is","are","was","were","with","from","by","of","the","a","an"}
+        tokens = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', text)
+        return [t for t in tokens if t.lower() not in keywords]
+
+    return {
+        "is_batting":     is_batting,
+        "is_bowling":     is_bowling,
+        "is_fielding":    is_fielding,
+        "is_team":        is_team,
+        "is_h2h":         is_h2h,
+        "is_allrounder":  is_allrounder,
+        "is_form":        is_form,
+        "is_trend":       is_trend,
+        "is_phase":       is_phase,
+        "is_comparison":  is_comparison,
+        "is_opponent":    is_opponent,
+        "is_consistency": is_consistency,
+        "is_chase":       is_chase,
+        "is_pressure":    is_pressure,
+        "is_leaderboard": is_leaderboard,
+        "is_milestone":   is_milestone,
+        "is_over_by_over":is_over_by_over,
+        "is_venue":       is_venue,
+        "is_fantasy":     is_fantasy,
+        "is_predictive":  is_predictive,
+        "is_time_based":  is_time_based,
+        "fmt_t20":  fmt_t20,
+        "fmt_odi":  fmt_odi,
+        "fmt_test": fmt_test,
+        "candidate_names": extract_player_names(question),
+    }
+
+
+# =========================================================
+# BUILD SCHEMA CONTEXT
+# =========================================================
+
+def build_schema_context(question=""):
+    schema_lines = []
+    for column, metadata in NV_PLAY_DICTIONARY.items():
+        line = (
+            f"\nColumn: {column}"
+            f"\nDescription: {metadata['description']}"
+            f"\nDatatype: {metadata['datatype']}"
+            f"\nCategory: {metadata['category']}"
+            f"\nAggregation: {metadata['aggregation']}"
+            f"\nSynonyms: {', '.join(metadata['synonyms'])}"
+        )
+        schema_lines.append(line)
+    return "\n".join(schema_lines)
+
+
+# =========================================================
+# BUILD METRICS CONTEXT
+# =========================================================
+
+def build_metrics_context():
+    metric_lines = []
+    for metric, metadata in DERIVED_METRICS.items():
+        line = (
+            f"\nMetric: {metric}"
+            f"\nDescription: {metadata['description']}"
+            f"\nFormula: {metadata['formula']}"
+            f"\nCategory: {metadata['category']}"
+            f"\nSynonyms: {', '.join(metadata['synonyms'])}"
+        )
+        metric_lines.append(line)
+    return "\n".join(metric_lines)
+
+
+# =========================================================
+# BUILD RULES CONTEXT
+# =========================================================
+
+def build_rules_context():
+    rules = CRICKET_RULES
+    lines = []
+
+    lines.append("MINIMUM SAMPLE SIZES:")
+    for category, values in rules["minimum_sample_size"].items():
+        for k, v in values.items():
+            lines.append(f"  {category} -> {k}: {v}")
+
+    lines.append("\nMATCH PHASES (T20):")
+    for phase, data in rules["match_phases"]["T20"].items():
+        lines.append(
+            f"  {phase}: overs {data['start_over']}-{data['end_over']} -- {data['description']}"
+        )
+
+    lines.append("\nMATCH PHASES (ODI):")
+    for phase, data in rules["match_phases"]["ODI"].items():
+        lines.append(
+            f"  {phase}: overs {data['start_over']}-{data['end_over']} -- {data['description']}"
+        )
+
+    lines.append("\nBATTING BENCHMARKS — apply the correct format based on match_type in the data:")
+    lines.append("\n  T20 Strike Rate:")
+    for tier, data in rules["batting_benchmarks"]["T20"]["strike_rate"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Strike Rate:")
+    for tier, data in rules["batting_benchmarks"]["ODI"]["strike_rate"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  Test Batting Average:")
+    for tier, data in rules["batting_benchmarks"]["TEST"]["batting_average"].items():
+        lines.append(f"    {tier}: {data}")
+
+    lines.append("\n  T20 Powerplay SR:")
+    for tier, data in rules["batting_benchmarks"]["T20"]["powerplay_sr"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Powerplay SR:")
+    for tier, data in rules["batting_benchmarks"]["ODI"]["powerplay_sr"].items():
+        lines.append(f"    {tier}: {data}")
+
+    lines.append("\n  T20 Death SR:")
+    for tier, data in rules["batting_benchmarks"]["T20"]["death_sr"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Death SR:")
+    for tier, data in rules["batting_benchmarks"]["ODI"]["death_sr"].items():
+        lines.append(f"    {tier}: {data}")
+
+    lines.append("\nBOWLING BENCHMARKS — apply the correct format based on match_type in the data:")
+    lines.append("\n  T20 Economy Rate:")
+    for tier, data in rules["bowling_benchmarks"]["T20"]["economy_rate"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Economy Rate:")
+    for tier, data in rules["bowling_benchmarks"]["ODI"]["economy_rate"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  Test Economy Rate:")
+    for tier, data in rules["bowling_benchmarks"]["TEST"]["economy_rate"].items():
+        lines.append(f"    {tier}: {data}")
+
+    lines.append("\n  T20 Powerplay Economy:")
+    for tier, data in rules["bowling_benchmarks"]["T20"]["powerplay_economy"].items():
+        lines.append(f"    {tier}: {data}")
+
+    lines.append("\n  T20 Death Economy:")
+    for tier, data in rules["bowling_benchmarks"]["T20"]["death_economy"].items():
+        lines.append(f"    {tier}: {data}")
+
+    lines.append("\n  T20 Dot Ball %:")
+    for tier, data in rules["bowling_benchmarks"]["T20"]["dot_ball_percentage"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  ODI Dot Ball %:")
+    for tier, data in rules["bowling_benchmarks"]["ODI"]["dot_ball_percentage"].items():
+        lines.append(f"    {tier}: {data}")
+    lines.append("\n  Test Dot Ball %:")
+    for tier, data in rules["bowling_benchmarks"]["TEST"]["dot_ball_percentage"].items():
+        lines.append(f"    {tier}: {data}")
+
+    lines.append("\nFORMAT BENCHMARK SELECTION RULE FOR SQL PLANNER:")
+    lines.append("  T20 / T20I  -> use T20 benchmarks")
+    lines.append("  ODI         -> use ODI benchmarks")
+    lines.append("  Test        -> use TEST benchmarks")
+    lines.append("  Mixed       -> include all formats and benchmark each separately")
+    lines.append("  NEVER apply T20 benchmarks when the data covers ODI or Test matches")
+
+    lines.append("\nDISMISSAL TYPES:")
+    for dtype, meta in rules["dismissal_types"].items():
+        lines.append(f"  {dtype}: {meta['tactical_note']}")
+        lines.append(f"    pattern_insight: {meta['pattern_insight']}")
+
+    lines.append("\nLEGAL BALL:")
+    lines.append(f"  {rules['legal_ball_rules']['analysis_note']}")
+    lines.append(f"  discipline_insight: {rules['legal_ball_rules']['discipline_insight']}")
+
+    lines.append("\nKEEPER POSITION:")
+    lines.append(f"  keeper_up=TRUE: {rules['keeper_position_rules']['keeper_up']['impact']}")
+    lines.append(f"  keeper_up=FALSE: {rules['keeper_position_rules']['keeper_back']['impact']}")
+
+    lines.append("\nBOWLING ANGLE:")
+    lines.append(f"  around_the_wicket: {rules['bowling_angle_rules']['around_the_wicket']['right_arm_to_right_batter']}")
+    lines.append(f"  over_the_wicket:   {rules['bowling_angle_rules']['over_the_wicket']['meaning']}")
+
+    lines.append("\nFREE HIT:")
+    lines.append(f"  {rules['free_hit_rules']['analysis_note']}")
+
+    lines.append("\nALL ROUNDER THRESHOLDS (T20):")
+    for k, v in rules["all_rounder_thresholds"]["T20"].items():
+        lines.append(f"  {k}: {v}")
+
+    lines.append("\nCOMPARISON RULES:")
+    for rule in rules["comparison_rules"]:
+        lines.append(f"  - {rule}")
+
+    lines.append("\nHEAD TO HEAD:")
+    for note in rules["head_to_head_rules"]["insight_notes"]:
+        lines.append(f"  - {note}")
+
+    lines.append("\nCONSISTENCY METRICS (T20):")
+    for band, data in rules["consistency_metrics"]["innings_score_bands"].items():
+        lines.append(f"  {band}: {data['range']} -> {data['label']}")
+    for k, v in rules["consistency_metrics"]["consistency_thresholds"].items():
+        lines.append(f"  {k}: {v}")
+
+    lines.append("\nBATTING POSITION ROLES:")
+    for role, data in rules["batting_position_roles"].items():
+        lines.append(f"  {role} (pos {data['positions']}): {data['role']}")
+
+    lines.append("\nPRESSURE / CLUTCH CONTEXT:")
+    for item in rules["pressure_context"]["clutch_batting_situations"]:
+        lines.append(f"  batting pressure: {item}")
+    for item in rules["pressure_context"]["clutch_bowling_situations"]:
+        lines.append(f"  bowling pressure: {item}")
+
+    lines.append("\nOVER-BY-OVER EXPECTATIONS (T20):")
+    for over, data in rules["over_context"]["T20_expected_runs_per_over"].items():
+        lines.append(f"  {over}: {data['expected']} runs -- {data['note']}")
+
+    lines.append("\nMILESTONE SQL PATTERNS:")
+    for milestone, pattern in rules["milestone_context"]["sql_patterns"].items():
+        lines.append(f"  {milestone}: {pattern}")
+
+    return "\n".join(lines)
+
+
+# =========================================================
+# BUILD INSIGHT RULES CONTEXT
+# =========================================================
+
+def build_insight_rules_context():
+    rules = CRICKET_RULES
+    lines = []
+
+    lines.append("PERFORMANCE TIER LABELS (use these in analysis):")
+    lines.append("  BATTING:")
+    for tier, label in rules["performance_labels"]["batting"].items():
+        lines.append(f"    {tier}: {label}")
+    lines.append("  BOWLING:")
+    for tier, label in rules["performance_labels"]["bowling"].items():
+        lines.append(f"    {tier}: {label}")
+    lines.append("  ALL-ROUND:")
+    for tier, label in rules["performance_labels"]["allround"].items():
+        lines.append(f"    {tier}: {label}")
+
+    lines.append("\nBATTING BENCHMARKS (ALL FORMATS — apply the one matching the data's match_type):")
+    for fmt in ["T20", "ODI", "TEST"]:
+        if fmt in rules["batting_benchmarks"]:
+            lines.append(f"\n  [{fmt}]")
+            for metric, tiers in rules["batting_benchmarks"][fmt].items():
+                lines.append(f"  {metric}:")
+                for tier, data in tiers.items():
+                    lines.append(f"    {tier}: {data}")
+
+    lines.append("\nBOWLING BENCHMARKS (ALL FORMATS — apply the one matching the data's match_type):")
+    for fmt in ["T20", "ODI", "TEST"]:
+        if fmt in rules["bowling_benchmarks"]:
+            lines.append(f"\n  [{fmt}]")
+            for metric, tiers in rules["bowling_benchmarks"][fmt].items():
+                lines.append(f"  {metric}:")
+                for tier, data in tiers.items():
+                    lines.append(f"    {tier}: {data}")
+
+    lines.append("\nFORMAT BENCHMARK SELECTION RULE:")
+    lines.append("  CRITICAL: Always check match_type in the data to choose the right benchmark set.")
+    lines.append("  If match_type = T20 or T20I   -> use T20 benchmarks above")
+    lines.append("  If match_type = ODI or ODII   -> use ODI benchmarks above")
+    lines.append("  If match_type = Test          -> use TEST benchmarks above")
+    lines.append("  If mixed formats in data      -> state each format separately in the analysis")
+    lines.append("  NEVER apply T20 benchmarks to ODI or Test data — they are not interchangeable")
+
+    lines.append("\nINSIGHT RULES (follow all of these):")
+    for rule in rules["insight_rules"]:
+        lines.append(f"  - {rule}")
+
+    lines.append("\nMATCH SITUATION CONTEXT:")
+    for situation, data in rules["match_situations"].items():
+        lines.append(f"  {situation}: {data['insight']}")
+
+    lines.append("\nDISMISSAL TACTICAL CONTEXT:")
+    for dtype, meta in rules["dismissal_types"].items():
+        lines.append(f"  {dtype}:")
+        lines.append(f"    tactical: {meta['tactical_note']}")
+        lines.append(f"    causes: {', '.join(meta.get('common_causes', []))}")
+        lines.append(f"    pattern: {meta['pattern_insight']}")
+
+    lines.append("\nSCORING ZONE CONTEXT:")
+    for zone, data in rules["scoring_zone_context"].items():
+        lines.append(f"  {zone}: {data['insight']}")
+
+    lines.append("\nHEAD TO HEAD INSIGHT RULES:")
+    for note in rules["head_to_head_rules"]["insight_notes"]:
+        lines.append(f"  - {note}")
+    for note in rules["head_to_head_rules"]["dismissal_pattern_notes"]:
+        lines.append(f"  - {note}")
+
+    lines.append("\nCONSISTENCY METRICS:")
+    for band, data in rules["consistency_metrics"]["innings_score_bands"].items():
+        lines.append(f"  {band}: {data['range']} -> {data['label']}")
+    for k, v in rules["consistency_metrics"]["consistency_thresholds"].items():
+        lines.append(f"  threshold: {k} = {v}")
+
+    lines.append("\nRECENT FORM CONTEXT:")
+    for k, v in rules["recent_form_context"]["form_vs_career"].items():
+        lines.append(f"  {k}: {v}")
+    for note in rules["recent_form_context"]["form_trend_insight"]:
+        lines.append(f"  - {note}")
+
+    lines.append("\nOPPONENT ANALYSIS CONTEXT:")
+    bogey = rules["opponent_analysis_context"]["bogey_opponent"]
+    fav   = rules["opponent_analysis_context"]["favourite_opponent"]
+    lines.append(f"  bogey_opponent indicator (batting): {bogey['indicator_batting']}")
+    lines.append(f"  bogey_opponent indicator (bowling): {bogey['indicator_bowling']}")
+    lines.append(f"  favourite_opponent indicator (batting): {fav['indicator_batting']}")
+    lines.append(f"  quality note: {rules['opponent_analysis_context']['opposition_quality_note']}")
+
+    lines.append("\nMATCH SITUATION PRESSURE CONTEXT:")
+    for item in rules["pressure_context"]["clutch_batting_situations"]:
+        lines.append(f"  clutch batting: {item}")
+    lines.append(f"  pressure indicator (batting): {rules['pressure_context']['pressure_indicators']['batting']}")
+    lines.append(f"  pressure indicator (bowling): {rules['pressure_context']['pressure_indicators']['bowling']}")
+
+    lines.append("\nOVER CONTEXT (T20 expected RPO — apply only when match_type is T20/T20I):")
+    for over, data in rules["over_context"]["T20_expected_runs_per_over"].items():
+        lines.append(f"  {over}: expected {data['expected']} -- {data['note']}")
+    lines.append("  NOTE: These RPO expectations apply to T20 only. For ODI, par RPO is ~5-6 in middle overs")
+    lines.append("  and 8-9 in the last 10 overs. For Test, sessions are measured in runs/session not RPO.")
+
+    return "\n".join(lines)
+
+
+# =========================================================
+# CRICKET TERMINOLOGY DICTIONARY
+# =========================================================
+
+def build_cricket_terms_context():
+    lines = ["CRICKET TERMINOLOGY -> SQL TRANSLATION:"]
+
+    lines.append("\nBATTING POSITIONS:")
+    lines.append("  opener / openers       -> batting_position IN (1, 2)")
+    lines.append("  top order / top-order  -> batting_position IN (1, 2, 3)")
+    lines.append("  middle order           -> batting_position IN (4, 5, 6)")
+    lines.append("  lower order / tail     -> batting_position IN (7, 8, 9, 10, 11)")
+    lines.append("  finisher               -> batting_position IN (5, 6, 7)")
+    lines.append("  number 3 / no.3        -> batting_position = 3")
+    lines.append("  number 4 / no.4        -> batting_position = 4")
+
+    lines.append("\nPHASES (T20):")
+    lines.append("  powerplay / pp / pp1   -> over BETWEEN 1 AND 6")
+    lines.append("  middle overs           -> over BETWEEN 7 AND 15")
+    lines.append("  death / slog overs     -> over BETWEEN 16 AND 20")
+    lines.append("  first over             -> over = 1")
+    lines.append("  last / final over      -> over = 20")
+
+    lines.append("\nPHASES (ODI):")
+    lines.append("  odi powerplay          -> over BETWEEN 1 AND 10")
+    lines.append("  odi middle overs       -> over BETWEEN 11 AND 40")
+    lines.append("  odi death overs        -> over BETWEEN 41 AND 50")
+
+    lines.append("\nDISMISSALS:")
+    lines.append("  caught                 -> wicket = 'Caught'")
+    lines.append("  bowled                 -> wicket = 'Bowled'")
+    lines.append("  lbw                    -> wicket = 'LBW'")
+    lines.append("  run out                -> wicket = 'Run Out'")
+    lines.append("  stumped                -> wicket = 'Stumped'")
+    lines.append("  hit wicket             -> wicket = 'Hit Wicket'")
+    lines.append("  duck                   -> runs = 0 AND wicket IS NOT NULL")
+    lines.append("  dismissed              -> wicket IS NOT NULL")
+    lines.append("  not out                -> wicket IS NULL")
+    lines.append("  golden duck            -> runs = 0 AND wicket IS NOT NULL AND ball = 1")
+
+    lines.append("\nDELIVERY TYPES:")
+    lines.append("  dot ball               -> (runs + extra_runs) = 0 AND legal_ball = TRUE")
+    lines.append("  boundary               -> runs IN (4, 6)")
+    lines.append("  six / sixes            -> runs = 6")
+    lines.append("  four / fours           -> runs = 4")
+    lines.append("  free hit               -> free_hit = TRUE")
+    lines.append("  wide                   -> legal_ball = FALSE")
+    lines.append("  no ball                -> legal_ball = FALSE")
+    lines.append("  scoring shot           -> runs > 0 AND legal_ball = TRUE")
+
+    lines.append("\nMATCH CONTEXT:")
+    lines.append("  first innings          -> innings = 1")
+    lines.append("  second innings / chase -> innings = 2")
+    lines.append("  batting first          -> innings = 1")
+    lines.append("  batting second         -> innings = 2")
+
+    lines.append("\nFIELDING / BOWLING ANGLE:")
+    lines.append("  keeper up              -> keeper_up = TRUE")
+    lines.append("  keeper back            -> keeper_up = FALSE")
+    lines.append("  around the wicket      -> around_the_wicket = TRUE")
+    lines.append("  over the wicket        -> around_the_wicket = FALSE")
+
+    lines.append("\nPERFORMANCE FORMULAS (PostgreSQL only):")
+    lines.append("  economy rate        -> ROUND((SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6, 2)")
+    lines.append("  batting strike rate -> ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  batting average     -> ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
+    lines.append("  bowling average     -> ROUND(SUM(runs + extra_runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
+    lines.append("  dot ball %          -> ROUND((COUNT(*) FILTER (WHERE (runs + extra_runs) = 0 AND legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  boundary %          -> ROUND((COUNT(*) FILTER (WHERE runs IN (4,6))::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  six %               -> ROUND((COUNT(*) FILTER (WHERE runs=6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  scoring rate        -> ROUND((COUNT(*) FILTER (WHERE runs>0 AND legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100, 2)")
+    lines.append("  wickets per match   -> ROUND(COUNT(*) FILTER (WHERE wicket IS NOT NULL)::numeric / NULLIF(COUNT(DISTINCT match),0), 2)")
+    lines.append("  bowling SR          -> ROUND(COUNT(*) FILTER (WHERE legal_ball=TRUE)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0), 2)")
+
+    lines.append("\nPHASE-CONDITIONAL AGGREGATIONS:")
+    lines.append("  SR in powerplay  -> ROUND((SUM(runs) FILTER (WHERE over BETWEEN 1 AND 6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 1 AND 6),0))*100,2)")
+    lines.append("  SR in death      -> ROUND((SUM(runs) FILTER (WHERE over BETWEEN 16 AND 20)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 16 AND 20),0))*100,2)")
+    lines.append("  eco in powerplay -> ROUND((SUM(runs + extra_runs) FILTER (WHERE over BETWEEN 1 AND 6)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 1 AND 6),0))*6,2)")
+    lines.append("  eco in death     -> ROUND((SUM(runs + extra_runs) FILTER (WHERE over BETWEEN 16 AND 20)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE AND over BETWEEN 16 AND 20),0))*6,2)")
+
+    return "\n".join(lines)
+
+
+# =========================================================
+# DATE / TIME CONTEXT
+# =========================================================
+
+def build_date_context():
+    lines = []
+    lines.append("DATE & TIME COLUMN RULES — READ EVERY LINE:")
+    lines.append("")
+    lines.append("PRIMARY DATE COLUMN:")
+    lines.append("  date   -> PostgreSQL DATE type (stored as 'YYYY-MM-DD')")
+    lines.append("  ALL year/season/month/day/recent/latest filters use date")
+    lines.append("  NEVER attempt to cast or convert date — it is already a DATE")
+    lines.append("")
+    lines.append("YEAR EXTRACTION (PostgreSQL ONLY):")
+    lines.append("  EXTRACT(YEAR FROM date)::int AS year   -- ALWAYS cast to int, ALWAYS alias as 'year'")
+    lines.append("  DATE_PART('year', date)                -- identical result")
+    lines.append("  TO_CHAR(date, 'YYYY')                  -- returns TEXT '2023', use for display only")
+    lines.append("  NEVER use: YEAR() / date.year / DATEPART(year,...)")
+    lines.append("")
+    lines.append("MONTH / DAY EXTRACTION:")
+    lines.append("  EXTRACT(MONTH FROM date)::int          -- integer 1-12")
+    lines.append("  EXTRACT(DAY FROM date)::int            -- integer 1-31")
+    lines.append("  TO_CHAR(date, 'Mon')                   -- 'Jan'..'Dec'")
+    lines.append("  TO_CHAR(date, 'YYYY-MM')               -- '2023-04' for monthly grouping")
+    lines.append("  NEVER use: MONTH() / DAY() -- MySQL syntax only")
+    lines.append("")
+    lines.append("RELATIVE DATE WINDOWS (PostgreSQL intervals):")
+    lines.append("  'last N years'   -> WHERE date >= CURRENT_DATE - INTERVAL 'N years'")
+    lines.append("  'last N months'  -> WHERE date >= CURRENT_DATE - INTERVAL 'N months'")
+    lines.append("  'last N days'    -> WHERE date >= CURRENT_DATE - INTERVAL 'N days'")
+    lines.append("  'this year'      -> WHERE EXTRACT(YEAR FROM date) = EXTRACT(YEAR FROM CURRENT_DATE)")
+    lines.append("  'last year'      -> WHERE EXTRACT(YEAR FROM date) = EXTRACT(YEAR FROM CURRENT_DATE) - 1")
+    lines.append("  'since YYYY'     -> WHERE date >= 'YYYY-01-01'::date")
+    lines.append("  'before YYYY'    -> WHERE date < 'YYYY-01-01'::date")
+    lines.append("  'in YYYY'        -> WHERE EXTRACT(YEAR FROM date) = YYYY")
+    lines.append("  'recent/latest'  -> ORDER BY date DESC LIMIT 10 (or 1)")
+    lines.append("")
+    lines.append("LAST N MATCHES — use CTE (NOT date arithmetic — matches are not daily):")
+    lines.append("""
+  WITH last_matches AS (
+    SELECT DISTINCT match, date
+    FROM public.nv_play
+    WHERE batter ILIKE '%name%'
+    ORDER BY date DESC
+    LIMIT 10
+  )
+  SELECT ...
+  FROM public.nv_play p
+  JOIN last_matches lm ON p.match = lm.match
+  WHERE p.batter ILIKE '%name%'
+  GROUP BY p.date, p.match
+  ORDER BY p.date DESC
+""")
+    lines.append("ALWAYS: alias EXTRACT result as 'year' / 'month' / 'day'")
+    lines.append("ALWAYS: ORDER BY time column ASC for trend queries")
+    lines.append("NEVER: YEAR() MONTH() DAY() DATEADD() DATE_ADD() DATEPART()")
+    return "\n".join(lines)
+
+
+# =========================================================
+# BUILD TIMESTAMP CONTEXT
+# =========================================================
+
+def build_timestamp_context():
+    lines = []
+    lines.append("TIMESTAMP COLUMN RULES — READ EVERY LINE BEFORE WRITING ANY TIME-BASED SQL:")
+    lines.append("")
+    lines.append("COLUMN: timestamp")
+    lines.append("  Table   : public.nv_play")
+    lines.append("  Type    : TIMESTAMP WITHOUT TIME ZONE (native PostgreSQL timestamp)")
+    lines.append("  Purpose : Records the exact wall-clock moment each delivery was bowled.")
+    lines.append("  USE THIS COLUMN for ALL time/duration/pace-of-play questions.")
+    lines.append("")
+    lines.append("CRITICAL — DO NOT CALL TO_TIMESTAMP() ON THIS COLUMN:")
+    lines.append("  CORRECT  : MIN(timestamp) AS first_ball_time")
+    lines.append("  CORRECT  : EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp)))")
+    lines.append("  WRONG    : TO_TIMESTAMP(timestamp, 'YYYYMMDD HH24:MI:SS.MS')")
+    lines.append("")
+    lines.append("CORRECT COLUMN NAMES:")
+    lines.append("  match, innings, over, ball, runs, extra_runs, date, timestamp")
+    lines.append("  NEVER: match_id, innings_number, over_number, ball_number, runs_batter, match_date")
+    lines.append("")
+    lines.append("TIMESTAMP SAFETY RULES:")
+    lines.append("  1. NEVER call TO_TIMESTAMP() — timestamp is already a TIMESTAMP type")
+    lines.append("  2. ALWAYS filter WHERE timestamp IS NOT NULL before using it")
+    lines.append("  3. ALWAYS use EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) for durations")
+    lines.append("  4. Divide EPOCH result by 60.0 for minutes, 3600.0 for hours")
+    return "\n".join(lines)
+
+
+# =========================================================
+# BUILD FORMAT CONTEXT
+# =========================================================
+
+def build_format_context():
+    lines = []
+    lines.append("CRICKET FORMAT RULES:")
+    lines.append("")
+    lines.append("ACTUAL match_type VALUES IN THE DATABASE:")
+    lines.append("  'T20', 'T20I', '50 Over', 'ODI', 'Timed', 'First Class', 'Test', 'List A'")
+    lines.append("")
+    lines.append("BENCHMARK MAPPING:")
+    lines.append("  match_type IN ('T20', 'T20I')               -> USE T20 benchmarks")
+    lines.append("  match_type IN ('50 Over', 'ODI', 'List A')  -> USE ODI benchmarks")
+    lines.append("  match_type IN ('Timed', 'First Class', 'Test') -> USE Test benchmarks")
+    lines.append("")
+    lines.append("FORMAT DETECTION FROM USER QUESTION:")
+    lines.append("  T20 / T20I / IPL / BBL    -> match_type IN ('T20','T20I')")
+    lines.append("  ODI / one-day / 50-over   -> match_type IN ('50 Over','ODI','List A')")
+    lines.append("  Test / timed / red-ball   -> match_type IN ('Timed','Test','First Class')")
+    lines.append("  If no format mentioned    -> DO NOT filter match_type")
+    lines.append("")
+    lines.append("OVER RANGES BY FORMAT:")
+    lines.append("  T20 / T20I   : total 1-20  | powerplay 1-6   | middle 7-15   | death 16-20")
+    lines.append("  50 Over / ODI: total 1-50  | powerplay 1-10  | middle 11-40  | death 41-50")
+    lines.append("  Timed / Test : no over limit | new ball 1-20 | middle 21-60  | old ball 61+")
+    return "\n".join(lines)
+
+
+# =========================================================
+# BUILD ADVANCED QUERY PATTERNS CONTEXT
+# =========================================================
+
+def build_advanced_patterns_context():
+    lines = []
+    lines.append("ADVANCED QUERY PATTERNS:")
+    lines.append("")
+    lines.append("1. CAREER BASELINE:")
+    lines.append("""
+  SELECT batter,
+    COUNT(DISTINCT match) AS matches,
+    SUM(runs) AS career_runs,
+    COUNT(*) FILTER (WHERE legal_ball=TRUE) AS career_balls,
+    ROUND((SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100,2) AS career_sr,
+    ROUND(SUM(runs)::numeric / NULLIF(COUNT(*) FILTER (WHERE wicket IS NOT NULL),0),2) AS career_avg
+  FROM public.nv_play WHERE batter ILIKE '%name%' GROUP BY batter
+""")
+    lines.append("2. PHASE SPLIT, RECENT FORM, H2H: see full patterns in original context.")
+    return "\n".join(lines)
+
+
+# =========================================================
+# BUILD BASELINE QUERIES HINT
+# =========================================================
+
+def build_baseline_queries_hint():
+    lines = []
+    lines.append("PROACTIVE BASELINE QUERY STRATEGY — MANDATORY:")
+    lines.append("  For ANY player question: Q1 career_baseline + Q2 phase_split + Q3 question_specific")
+    lines.append("  For ANY team question:   Q1 team_batting + Q2 team_bowling + Q3 phase_split")
+    lines.append("  For RECENT FORM:         Q1 career_baseline + Q2 last_10_matches + Q3 phase_split_recent")
+    lines.append("  For HEAD-TO-HEAD:        Q1 h2h_summary + Q2 batter_career + Q3 bowler_career")
+    lines.append("  For LEADERBOARD:         Q1 main_leaderboard + Q2 phase_leaders")
+    return "\n".join(lines)
+
+
+# =========================================================
+# BUILD SYSTEMIC CRICKET KNOWLEDGE
+# =========================================================
+
+def build_systemic_cricket_knowledge():
+    lines = []
+    lines.append("SYSTEMIC CRICKET KNOWLEDGE (blend with statistical findings):")
+    lines.append("")
+    lines.append("BATTING ARCHETYPES: AGGRESSOR (SR>145 T20), ANCHOR (moderate SR), FINISHER (death SR>175 T20)")
+    lines.append("BOWLING ARCHETYPES: WICKET-TAKER (SR<15 T20), MISER (eco<7 T20), DEATH SPECIALIST, SPINNER")
+    lines.append("FORMAT-AWARE: T20 SR elite>160 | ODI SR elite>110 | Test avg elite>55")
+    lines.append("Apply format-correct benchmarks always. Derive format from match_type in data.")
+    return "\n".join(lines)
+
+
+# =========================================================
+# CONVERSATIONAL CONTEXT BUILDER
+# =========================================================
+
+def build_session_context(session_context: list) -> str:
+    if not session_context:
+        return ""
+    lines = ["\nPREVIOUS CONVERSATION CONTEXT (use to resolve indirect references):"]
+    for i, turn in enumerate(session_context[-4:], 1):
+        q = turn.get("question", "")
+        a = turn.get("summary", "")[:300]
+        lines.append(f"  Turn {i}: Q: {q}")
+        if a:
+            lines.append(f"           A (summary): {a}")
+    return "\n".join(lines)
+
+
+# =========================================================
+# STRIP HAVING CLAUSES
+# =========================================================
+
+def strip_having_clauses(sql_query):
+    cleaned = re.sub(
+        r'\bHAVING\b.*?(?=\bORDER\b|\bLIMIT\b|\bGROUP\b|;|$)',
+        '',
+        sql_query,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+    return " ".join(cleaned.split())
+
+
+def results_are_empty(query_results):
+    return all(
+        len(item.get("results", [])) == 0
+        for item in query_results
+    )
+
+
+# =========================================================
+# HEALTH CHECK
+# =========================================================
+
+@app.get("/health")
+def health_check():
+    try:
+        conn = get_db_connection()
+        conn.close()
+        return {"status": "ok", "database": "connected"}
+    except Exception as e:
+        import traceback
+        return {
+            "status":     "error",
+            "error_type": str(type(e)),
+            "message":    str(e),
+            "traceback":  traceback.format_exc()
+        }
+
+
+@app.get("/debug")
+def debug():
+    return {
+        "DB_HOST": os.getenv("DB_HOST"),
+        "DB_NAME": os.getenv("DB_NAME"),
+        "DB_USER": os.getenv("DB_USER")
+    }
+
+
+@app.get("/version")
+def version():
+    import datetime
+    return {
+        "version":     APP_VERSION,
+        "app":         "Cricket_Scorer_AI",
+        "model":       "gemini-2.5-flash",
+        "status":      "running",
+        "server_time": datetime.datetime.utcnow().isoformat() + "Z"
+    }
+
+
+@app.get("/gemini-test")
+def gemini_test():
+    return {"response": llm("Say hello from Cricket_Scorer_AI")}
+
+
+# =========================================================
+# CLEAN SQL
+# =========================================================
+
+def clean_sql(sql_query):
+    sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
+    sql_query = " ".join(sql_query.split())
+
+    col_fixes = [
+        (r'\bmatch_id\b',       'match'),
+        (r'\binnings_number\b', 'innings'),
+        (r'\bover_number\b',    'over'),
+        (r'\bball_number\b',    'ball'),
+        (r'\bruns_batter\b',    'runs'),
+        (r'\bmatch_date\b',     'date'),
+    ]
+    for pattern, replacement in col_fixes:
+        sql_query = re.sub(pattern, replacement, sql_query, flags=re.IGNORECASE)
+
+    sql_query = re.sub(r'\bSUM\s*\(\s*runs_total\s*\)', 'SUM(runs + extra_runs)', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'\bruns_total\b', '(runs + extra_runs)', sql_query, flags=re.IGNORECASE)
+
+    sql_query = re.sub(
+        r"TO_TIMESTAMP\s*\(\s*timestamp\s*,\s*'[^']+'\s*\)",
+        'timestamp',
+        sql_query,
+        flags=re.IGNORECASE
+    )
+    for wrong, right in [
+        ("wicket = TRUE",  "wicket IS NOT NULL"),
+        ("wicket=TRUE",    "wicket IS NOT NULL"),
+        ("wicket = FALSE", "wicket IS NULL"),
+        ("wicket=FALSE",   "wicket IS NULL"),
+        ("wicket = 1",     "wicket IS NOT NULL"),
+        ("wicket=1",       "wicket IS NOT NULL"),
+        ("wicket = 0",     "wicket IS NULL"),
+        ("wicket=0",       "wicket IS NULL"),
+    ]:
+        sql_query = sql_query.replace(wrong, right)
+
+    sql_query = re.sub(r'\bYEAR\s*\(\s*(\w+)\s*\)',  r'EXTRACT(YEAR  FROM \1)', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'\bMONTH\s*\(\s*(\w+)\s*\)', r'EXTRACT(MONTH FROM \1)', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'\bDAY\s*\(\s*(\w+)\s*\)',   r'EXTRACT(DAY   FROM \1)', sql_query, flags=re.IGNORECASE)
+
+    sql_query = re.sub(r'\bDATEPART\s*\(\s*year\s*,\s*(\w+)\s*\)',  r'EXTRACT(YEAR  FROM \1)', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'\bDATEPART\s*\(\s*month\s*,\s*(\w+)\s*\)', r'EXTRACT(MONTH FROM \1)', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'\bDATEPART\s*\(\s*day\s*,\s*(\w+)\s*\)',   r'EXTRACT(DAY   FROM \1)', sql_query, flags=re.IGNORECASE)
+
+    sql_query = re.sub(r'\bIFNULL\s*\(', 'COALESCE(', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'\bNVL\s*\(',    'COALESCE(', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'\bISNULL\s*\(', 'COALESCE(', sql_query, flags=re.IGNORECASE)
+
+    sql_query = re.sub(r'\bSELECT\s+TOP\s+(\d+)\s+', r'SELECT ', sql_query, flags=re.IGNORECASE)
+    sql_query = re.sub(r'`(\w+)`', r'"\1"', sql_query)
+
+    sql_query = re.sub(
+        r'EXTRACT\s*\(\s*(YEAR|MONTH|DAY)\s+FROM\s+(\w+)\s*\)\s+AS\s+(\w+)',
+        r'EXTRACT(\1 FROM \2)::int AS \3',
+        sql_query, flags=re.IGNORECASE
+    )
+
+    sql_query = re.sub(r'\bINSTR\s*\(', 'POSITION(', sql_query, flags=re.IGNORECASE)
+
+    return sql_query.strip()
+
+
+# =========================================================
+# VALIDATE SQL
+# =========================================================
+
+def validate_sql(sql_query):
+    allowed_keywords = ["SELECT", "WITH"]
+    first_word = sql_query.strip().split()[0].upper()
+    if first_word not in allowed_keywords:
+        raise Exception("Only SELECT queries are allowed.")
+
+    blocked_keywords = ["DELETE", "DROP", "UPDATE", "INSERT", "ALTER", "TRUNCATE", "CREATE"]
+    upper_sql = sql_query.upper()
+    for keyword in blocked_keywords:
+        if keyword in upper_sql:
+            raise Exception(f"{keyword} operation not allowed.")
+
+
+# =========================================================
+# GENERATE QUERY PLAN
+# =========================================================
+
+def generate_query_plan(question, relax_thresholds=False,
+                        intent: dict = None, session_context: list = None):
+
+    schema_context    = build_schema_context(question)
+    metrics_context   = build_metrics_context()
+    rules_context     = build_rules_context()
+    cricket_terms     = build_cricket_terms_context()
+    date_context      = build_date_context()
+    timestamp_context = build_timestamp_context()
+    format_context    = build_format_context()
+    advanced_patterns = build_advanced_patterns_context()
+    baseline_hint     = build_baseline_queries_hint()
+    session_ctx       = build_session_context(session_context or [])
+
+    intent_hint = ""
+    if intent:
+        flags = [k for k, v in intent.items() if v is True]
+        intent_hint = f"\nDETECTED INTENT FLAGS: {', '.join(flags)}\n"
+        if intent.get("candidate_names"):
+            intent_hint += f"CANDIDATE ENTITY NAMES: {', '.join(intent['candidate_names'])}\n"
+        if intent.get("is_time_based"):
+            intent_hint += "\n⚠️  TIME-BASED QUERY DETECTED: You MUST use the timestamp column.\n"
+            intent_hint += "    Follow the TIMESTAMP COLUMN RULES section exactly.\n"
+            intent_hint += "    DO NOT answer with balls_faced as a proxy — use actual time arithmetic.\n"
+
+    threshold_note = ""
+    if relax_thresholds:
+        threshold_note = """
+RETRY MODE — PREVIOUS ATTEMPT RETURNED ZERO ROWS:
+- DO NOT add HAVING clauses or minimum thresholds in any query.
+- Return ALL rows regardless of sample size.
+- Broaden ILIKE patterns: use shorter fragments.
+- If original queries filtered by year, try without year filter.
+"""
+
+    prompt = f"""
+You are Cricket_Scorer_AI — an elite cricket data engineer.
+YOUR ONLY JOB: Translate the user's question into a precise, production-grade multi-query
+PostgreSQL plan. Include proactive baseline queries for context.
+
+{threshold_note}
+{intent_hint}
+{session_ctx}
+
+DATABASE: Table public.nv_play (each row = one delivery). Engine: PostgreSQL 14+
+
+SCHEMA: {schema_context}
+DERIVED METRICS: {metrics_context}
+CRICKET RULES: {rules_context}
+CRICKET TERMINOLOGY: {cricket_terms}
+DATE RULES: {date_context}
+TIMESTAMP RULES: {timestamp_context}
+FORMAT CONTEXT: {format_context}
+ADVANCED PATTERNS: {advanced_patterns}
+BASELINE STRATEGY: {baseline_hint}
+
+CRITICAL RULES:
+  wicket is TEXT: dismissed -> wicket IS NOT NULL | wicket=TRUE/FALSE/1/0 NEVER
+  SR = (SUM(runs)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*100
+  Economy = (SUM(runs+extra_runs)/NULLIF(COUNT(*) FILTER (WHERE legal_ball=TRUE),0))*6
+  ROUND(value::numeric,2) on ALL decimals | NULLIF(x,0) on every denominator
+  ILIKE '%name%' always | Pure PostgreSQL only | EXTRACT(YEAR FROM date)::int AS year
+
+OUTPUT FORMAT — STRICT JSON ONLY, NO PREAMBLE:
+{{
+  "analysis_type": "single | multi",
+  "intent": "precise description",
+  "has_time_dimension": true | false,
+  "has_phase_dimension": true | false,
+  "has_comparison": true | false,
+  "has_recent_form": true | false,
+  "has_fantasy_dimension": true | false,
+  "has_predictive_dimension": true | false,
+  "has_time_based_dimension": true | false,
+  "threshold_applied": true | false,
+  "queries": [
+    {{
+      "name": "descriptive_snake_case_name",
+      "purpose": "what this query computes and why",
+      "sql": "SELECT ..."
+    }}
+  ]
+}}
+
+USER QUESTION: {question}
+"""
+
+    raw = llm(prompt).replace("```json", "").replace("```", "").strip()
+    json_match = re.search(r'\{[\s\S]*\}', raw)
+    if json_match:
+        raw = json_match.group(0)
+
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {
+            "analysis_type":           "single",
+            "has_time_dimension":       False,
+            "has_phase_dimension":      False,
+            "has_comparison":           False,
+            "has_recent_form":          False,
+            "has_fantasy_dimension":    False,
+            "has_predictive_dimension": False,
+            "has_time_based_dimension": False,
+            "threshold_applied":        False,
+            "queries": [
+                {
+                    "name":    "fallback_query",
+                    "purpose": "Fallback cricket analysis",
+                    "sql":     generate_fallback_sql(question)
+                }
+            ]
+        }
+
+
+# =========================================================
+# FALLBACK SQL
+# =========================================================
+
+def generate_fallback_sql(question):
+    schema_context    = build_schema_context(question)
+    cricket_terms     = build_cricket_terms_context()
+    date_context      = build_date_context()
+    timestamp_context = build_timestamp_context()
+    format_context    = build_format_context()
+
+    prompt = f"""
+You are a PostgreSQL expert for cricket ball-by-ball data.
+TABLE: public.nv_play (each row = one delivery)
+
+SCHEMA: {schema_context}
+TERMINOLOGY: {cricket_terms}
+DATE RULES: {date_context}
+TIMESTAMP RULES: {timestamp_context}
+FORMAT RULES: {format_context}
+
+Return ONLY raw SQL, no markdown, no backticks, no explanation.
+Rules: SELECT only | PostgreSQL syntax | wicket IS NOT NULL for dismissals
+| ROUND(x::numeric,2) | NULLIF(x,0) | ILIKE '%name%'
+| NEVER call TO_TIMESTAMP(timestamp,...) — timestamp is already a TIMESTAMP
+
+QUESTION: {question}
+"""
+
+    sql_query = clean_sql(llm(prompt))
+    if not sql_query.endswith(";"):
+        sql_query += ";"
+    return sql_query
+
+
+# =========================================================
+# EXECUTE SQL
+# =========================================================
+
+def execute_sql(sql_query):
+    validate_sql(sql_query)
+    conn   = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(sql_query)
+    rows    = cursor.fetchall()
+    columns = [desc[0] for desc in cursor.description]
+    results = []
+    for row in rows:
+        row_dict = {}
+        for i, value in enumerate(row):
+            if isinstance(value, float):
+                value = round(value, 2)
+            row_dict[columns[i]] = value
+        results.append(row_dict)
+    cursor.close()
+    conn.close()
+    return results
+
+
+# =========================================================
+# EXECUTE QUERY PLAN
+# =========================================================
+
+def execute_query_plan(query_plan):
+    all_results = []
+    all_sql     = []
+    for q in query_plan.get("queries", []):
+        sql_query = clean_sql(q["sql"])
+        if not sql_query.endswith(";"):
+            sql_query += ";"
+        try:
+            results = execute_sql(sql_query)
+            all_results.append({
+                "query_name": q["name"],
+                "purpose":    q["purpose"],
+                "sql":        sql_query,
+                "results":    results
+            })
+            all_sql.append(sql_query)
+        except Exception as e:
+            all_results.append({
+                "query_name": q["name"],
+                "purpose":    q["purpose"],
+                "sql":        sql_query,
+                "results":    [],
+                "error":      str(e)
+            })
+    return all_results, all_sql
+
+
+# =========================================================
+# EXECUTE QUERY PLAN WITH RETRY
+# =========================================================
+
+def execute_query_plan_with_retry(query_plan, question,
+                                   intent: dict = None,
+                                   session_context: list = None):
+    all_results, all_sql = execute_query_plan(query_plan)
+
+    if results_are_empty(all_results):
+        retry_plan = {
+            "analysis_type": query_plan.get("analysis_type", "single"),
+            "queries": []
+        }
+        for q in query_plan.get("queries", []):
+            relaxed_sql = strip_having_clauses(q["sql"])
+            retry_plan["queries"].append({
+                "name":    q["name"] + "_relaxed",
+                "purpose": q["purpose"] + " (thresholds relaxed)",
+                "sql":     relaxed_sql
+            })
+        retry_results, retry_sql = execute_query_plan(retry_plan)
+
+        if results_are_empty(retry_results):
+            fresh_plan = generate_query_plan(
+                question,
+                relax_thresholds=True,
+                intent=intent,
+                session_context=session_context
+            )
+            fresh_results, fresh_sql = execute_query_plan(fresh_plan)
+            return fresh_results, fresh_sql, True
+
+        return retry_results, retry_sql, True
+
+    return all_results, all_sql, False
+
+
+# =========================================================
+# FORMAT RESULTS
+# =========================================================
+
+def format_results(results):
+    if not results:
+        return "No results found."
+    headers    = list(results[0].keys())
+    header_row = " | ".join(headers)
+    separator  = "-" * len(header_row)
+    table      = [header_row, separator]
+    for row in results:
+        table.append(" | ".join(str(v) for v in row.values()))
+    return "\n".join(table)
+
+
+# =========================================================
+# GENERATE CRICKET INSIGHT
+# =========================================================
+
+def generate_cricket_insight(question, query_results,
+                              small_sample=False,
+                              intent: dict = None,
+                              session_context: list = None):
+
+    compact_data          = json.dumps(query_results, default=str)[:18000]
+    insight_rules_context = build_insight_rules_context()
+    format_context        = build_format_context()
+    systemic_knowledge    = build_systemic_cricket_knowledge()
+    session_ctx           = build_session_context(session_context or [])
+
+    small_sample_note = ""
+    if small_sample:
+        small_sample_note = "SMALL SAMPLE SIZE: Mention naturally in analysis. Still deliver full verdict."
+
+    if intent is None:
+        intent = classify_intent(question)
+
+    is_time_query     = intent.get("is_trend", False)
+    is_phase_query    = intent.get("is_phase", False)
+    is_comparison     = intent.get("is_comparison", False)
+    is_form_query     = intent.get("is_form", False)
+    is_opponent_query = intent.get("is_opponent", False)
+    is_consistency    = intent.get("is_consistency", False)
+    is_h2h            = intent.get("is_h2h", False)
+    is_pressure       = intent.get("is_chase", False) or intent.get("is_pressure", False)
+    is_allrounder     = intent.get("is_allrounder", False)
+    is_leaderboard    = intent.get("is_leaderboard", False)
+    is_fantasy        = intent.get("is_fantasy", False)
+    is_predictive     = intent.get("is_predictive", False)
+    is_milestone      = intent.get("is_milestone", False)
+    is_over_by_over   = intent.get("is_over_by_over", False)
+    is_venue          = intent.get("is_venue", False)
+    is_time_based     = intent.get("is_time_based", False)
+
+    prompt = f"""
+You are Cricket_Scorer_AI — the world's most advanced cricket analytics engine.
+Transform raw numbers into genuine insight. NEVER mention SQL, database, queries, or tables.
+
+{small_sample_note}
+{session_ctx}
+
+USER QUESTION: {question}
+DATABASE RESULTS: {compact_data}
+
+CRICKET RULES: {insight_rules_context}
+FORMAT CONTEXT: {format_context}
+SYSTEMIC KNOWLEDGE: {systemic_knowledge}
+
+REPORT STRUCTURE:
+
+## 🏏 [Compelling headline]
+
+### 📊 Key Numbers
+Markdown table with ALL data.
+
+### 🔍 Deep Analysis
+Detect format from match_type. Apply correct benchmarks. Use tier labels.
+Strengths, Weaknesses, Tactical Intelligence.
+
+### 📈 Standout Moments
+4-6 bullets with bold key stats.
+
+### 💡 Verdict
+5-7 sentences. Expert-panel quality.
+
+### ℹ️ Additional Context
+**🎯 Query Context** | **📅 Data Coverage** | **📐 Benchmarks Used** | **📝 Summary** | **🔗 Related Analyses**
+
+RULES: 800-1500 words | Format-correct benchmarks always | Cricket terminology only
+"""
+
+    return llm(prompt)
+
+
+# =========================================================
+# GENERATE CHART CONFIG
+# =========================================================
+
+def generate_chart_config(question, query_results, intent: dict = None):
+
+    compact_data = json.dumps(query_results, default=str)[:10000]
+
+    if intent is None:
+        intent = classify_intent(question)
+
+    is_time      = intent.get("is_trend", False)
+    is_phase     = intent.get("is_phase", False)
+    is_compare   = intent.get("is_comparison", False)
+    is_over      = intent.get("is_over_by_over", False)
+    is_dismissal = any(w in question.lower() for w in ["dismissal","how out","bowled","caught","lbw","wicket type"])
+    is_dist      = intent.get("is_consistency", False)
+    is_fantasy   = intent.get("is_fantasy", False)
+    is_milestone = intent.get("is_milestone", False)
+    is_venue     = intent.get("is_venue", False)
+
+    hints = ""
+    if is_time:    hints += "TIME: year on x -> 'line' (1 metric) or 'bar' (2+)\n"
+    if is_phase:   hints += "PHASE: PP/Mid/Death categories -> 'bar'\n"
+    if is_compare: hints += "COMPARE: 2-5 entities -> 'bar' or 'radar'\n"
+    if is_over:    hints += "OVER-BY-OVER: over on x -> 'line'\n"
+    if is_dismissal: hints += "DISMISSAL: types -> 'pie'\n"
+    if is_dist:    hints += "DISTRIBUTION: score bands -> 'bar_colored'\n"
+    if is_fantasy: hints += "FANTASY: fantasy pts per player -> 'bar_colored'\n"
+    if is_milestone: hints += "MILESTONE: year + centuries stacked -> 'bar'\n"
+    if is_venue:   hints += "VENUE: venue as x -> 'bar_colored'\n"
+
+    prompt = f"""
+Cricket data visualisation expert. Select chart type that best communicates the PRIMARY INSIGHT.
+Return null if no chart adds meaningful value.
+
+HINTS: {hints}
+
+CHART TYPES: bar | bar_colored | line | area | pie | radar
+
+RETURN STRICT JSON (no preamble):
+{{
+  "chart_type": "...",
+  "title": "Specific title with entity name",
+  "subtitle": "Optional",
+  "x_key": "column_name",
+  "y_keys": ["metric1"],
+  "data": [{{"x_value": ..., "metric1": ...}}]
+}}
+
+Return exactly: null    if no chart is appropriate.
+
+USER QUESTION: {question}
+DATABASE RESULTS: {compact_data}
+"""
+
+    raw = llm(prompt).replace("```json", "").replace("```", "").strip()
+
+    if raw.lower().strip() == "null":
+        return None
+
+    json_match = re.search(r'\{[\s\S]*\}', raw)
+    if json_match:
+        raw = json_match.group(0)
+
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+# =========================================================
+# GENERATE INTENT SUMMARY
+# =========================================================
+
+def generate_intent_summary(question: str, intent: dict) -> str:
+    mapping = {
+        "is_batting":     "Batting analysis",
+        "is_bowling":     "Bowling analysis",
+        "is_fielding":    "Fielding analysis",
+        "is_team":        "Team analysis",
+        "is_h2h":         "Head-to-head matchup",
+        "is_allrounder":  "All-rounder assessment",
+        "is_form":        "Recent form",
+        "is_trend":       "Year-by-year trend",
+        "is_phase":       "Phase breakdown",
+        "is_comparison":  "Comparison",
+        "is_opponent":    "Opponent analysis",
+        "is_consistency": "Consistency & milestones",
+        "is_chase":       "Chase vs Setting",
+        "is_pressure":    "Pressure performance",
+        "is_leaderboard": "Rankings/leaderboard",
+        "is_milestone":   "Career milestones",
+        "is_over_by_over":"Over-by-over breakdown",
+        "is_venue":       "Venue analysis",
+        "is_fantasy":     "Fantasy recommendation",
+        "is_predictive":  "Predictive insight",
+        "is_time_based":  "Time/duration analysis",
+    }
+    flags = [label for k, label in mapping.items() if intent.get(k)]
+    fmt   = []
+    if intent.get("fmt_t20"):  fmt.append("T20")
+    if intent.get("fmt_odi"):  fmt.append("ODI")
+    if intent.get("fmt_test"): fmt.append("Test")
+
+    parts = []
+    if flags: parts.append(", ".join(flags))
+    if fmt:   parts.append(f"Format: {'/'.join(fmt)}")
+    if intent.get("candidate_names"):
+        parts.append(f"Entities: {', '.join(intent['candidate_names'])}")
+
+    return " | ".join(parts) if parts else "General cricket query"
+
+
+# =========================================================
+# ─────────────────────────────────────────────────────────
+#
+#  CONVERSATION ENDPOINTS
+#
+# ─────────────────────────────────────────────────────────
+# =========================================================
+
+
+# ── POST /conversations ───────────────────────────────────
+# Creates a new conversation for the authenticated user.
+# Called when user clicks "New Chat".
+
+@app.post("/conversations")
+def create_conversation(
+    req: NewConversationRequest,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Create a new conversation owned by the authenticated user.
+
+    Request body: { "title": "optional title" }
+    Header:       X-User-Id: <uuid>
+
+    Returns: { conversation_id, user_id, title, created_at, updated_at }
+    """
+    try:
+        conversation = ConversationRepository.create(
+            user_id=user_id,
+            title=req.title or "New Chat"
+        )
+        # Serialize datetimes
+        return {
+            "conversation_id": str(conversation["conversation_id"]),
+            "user_id":         str(conversation["user_id"]),
+            "title":           conversation["title"],
+            "created_at":      conversation["created_at"].isoformat(),
+            "updated_at":      conversation["updated_at"].isoformat(),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ── GET /conversations ────────────────────────────────────
+# Returns all conversations for the authenticated user (sidebar).
+
+@app.get("/conversations")
+def list_conversations(user_id: str = Depends(get_current_user)):
+    """
+    List all conversations for the current user, newest first.
+    Only returns conversations that belong to this user — never
+    exposes another user's data.
+
+    Header: X-User-Id: <uuid>
+    """
+    try:
+        conversations = ConversationRepository.list_for_user(user_id)
+        return {
+            "conversations": [
+                {
+                    "conversation_id": str(c["conversation_id"]),
+                    "user_id":         str(c["user_id"]),
+                    "title":           c["title"],
+                    "created_at":      c["created_at"].isoformat(),
+                    "updated_at":      c["updated_at"].isoformat(),
+                }
+                for c in conversations
+            ]
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ── GET /conversations/{conversation_id} ──────────────────
+# Returns a single conversation's metadata.
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(
+    conversation_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get metadata for one conversation.
+    Returns 403 if the conversation belongs to a different user.
+
+    Header: X-User-Id: <uuid>
+    """
+    try:
+        conversation = ConversationRepository.get(conversation_id, user_id)
+        if not conversation:
+            raise HTTPException(
+                status_code=403,
+                detail="Conversation not found or access denied."
+            )
+        return {
+            "conversation_id": str(conversation["conversation_id"]),
+            "user_id":         str(conversation["user_id"]),
+            "title":           conversation["title"],
+            "created_at":      conversation["created_at"].isoformat(),
+            "updated_at":      conversation["updated_at"].isoformat(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ── GET /conversations/{conversation_id}/messages ─────────
+# Returns all messages in a conversation (for chat replay).
+
+@app.get("/conversations/{conversation_id}/messages")
+def get_conversation_messages(
+    conversation_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Load all messages in a conversation for display in the chat UI.
+    Ownership is verified via JOIN — a user can never read another
+    user's messages even if they know the conversation_id.
+
+    Header: X-User-Id: <uuid>
+    """
+    try:
+        # First verify the conversation belongs to this user
+        conversation = ConversationRepository.get(conversation_id, user_id)
+        if not conversation:
+            raise HTTPException(
+                status_code=403,
+                detail="Conversation not found or access denied."
+            )
+
+        messages = ChatRepository.get_messages(conversation_id, user_id)
+        return {
+            "conversation_id": conversation_id,
+            "messages": [
+                {
+                    "message_id":      m["message_id"],
+                    "question":        m["question"],
+                    "generated_sql":   m["generated_sql"],
+                    "sql_result":      m["sql_result"],
+                    "answer":          m["answer"],
+                    "created_at":      m["created_at"].isoformat(),
+                }
+                for m in messages
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ── DELETE /conversations/{conversation_id} ───────────────
+# Deletes a conversation and all its messages (CASCADE).
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Delete a conversation and all associated messages.
+    Only the owning user can delete their own conversations.
+
+    Header: X-User-Id: <uuid>
+    """
+    try:
+        deleted = ConversationRepository.delete(conversation_id, user_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=403,
+                detail="Conversation not found or access denied."
+            )
+        return {"status": "deleted", "conversation_id": conversation_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# =========================================================
+# GENERATE SQL ROUTE  (minor update: add user_id header)
+# =========================================================
+
+@app.post("/generate-sql")
+def generate_sql(
+    req: QueryRequest,
+    user_id: str = Depends(get_current_user)
+):
+    try:
+        intent = classify_intent(req.question)
+
+        # Load session context from DB for this conversation
+        session_context = ChatRepository.get_recent_context(
+            req.conversation_id, user_id
+        )
+
+        return {
+            "question":       req.question,
+            "intent_flags":   {k: v for k, v in intent.items() if v is True},
+            "intent_summary": generate_intent_summary(req.question, intent),
+            "query_plan":     generate_query_plan(
+                                  req.question,
+                                  intent=intent,
+                                  session_context=session_context
+                              )
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# =========================================================
+# MAIN ASK ROUTE  — UPDATED
+# ─────────────────────────────────────────────────────────
+# Changes from v1:
+#   1. Requires X-User-Id header (via get_current_user)
+#   2. Requires conversation_id in request body
+#   3. Loads session_context from DB instead of from request
+#   4. Saves the full message to DB after generating insight
+#   5. Auto-sets conversation title on first message
+#
+# ALL existing cricket logic is 100% unchanged.
+# =========================================================
+
+@app.post("/ask")
+def ask_question(
+    req: QueryRequest,
+    user_id: str = Depends(get_current_user)
+):
+    try:
+        # ── Security: verify conversation belongs to this user ──
+        conversation = ConversationRepository.get(req.conversation_id, user_id)
+        if not conversation:
+            raise HTTPException(
+                status_code=403,
+                detail="Conversation not found or access denied."
+            )
+
+        # ── Load session context from DB (replaces frontend session_context) ──
+        session_context = ChatRepository.get_recent_context(
+            req.conversation_id, user_id, limit=4
+        )
+
+        # ── Step 0: Classify intent (unchanged) ──────────────
+        intent = classify_intent(req.question)
+        intent_summary = generate_intent_summary(req.question, intent)
+
+        # ── Step 1: Generate SQL query plan (unchanged) ───────
+        query_plan = generate_query_plan(
+            req.question,
+            intent=intent,
+            session_context=session_context
+        )
+
+        # ── Step 2: Execute with auto-retry (unchanged) ───────
+        query_results, sql_queries, thresholds_relaxed = execute_query_plan_with_retry(
+            query_plan,
+            req.question,
+            intent=intent,
+            session_context=session_context
+        )
+
+        # ── Step 3: Format plain-text tables (unchanged) ──────
+        tables = [
+            {
+                "query_name": item["query_name"],
+                "purpose":    item["purpose"],
+                "table":      format_results(item["results"])
+            }
+            for item in query_results
+        ]
+
+        # ── Step 4: Generate chart config (unchanged) ─────────
+        chart_config = generate_chart_config(
+            req.question,
+            query_results,
+            intent=intent
+        )
+
+        # ── Step 5: Generate cricket insight (unchanged) ──────
+        insight = generate_cricket_insight(
+            req.question,
+            query_results,
+            small_sample=thresholds_relaxed,
+            intent=intent,
+            session_context=session_context
+        )
+
+        # ── Step 6: Persist message to DB ─────────────────────
+        # Combine all SQL queries into one string for storage
+        all_sql_combined = "\n\n---\n\n".join(sql_queries)
+
+        # Combine all result sets for storage
+        all_results_combined = query_results
+
+        # Short summary for future context injection
+        answer_summary = insight[:400] if insight else ""
+
+        saved_message = ChatRepository.save_message(
+            conversation_id=req.conversation_id,
+            question=req.question,
+            generated_sql=all_sql_combined,
+            sql_result=all_results_combined,
+            answer=insight,
+            answer_summary=answer_summary
+        )
+
+        # ── Step 7: Auto-title the conversation on first message ──
+        # If the title is still "New Chat", set it from the question
+        if conversation["title"] == "New Chat":
+            auto_title = req.question[:60].strip()
+            if len(req.question) > 60:
+                auto_title += "..."
+            ConversationRepository.update_title(
+                req.conversation_id, user_id, auto_title
+            )
+
+        # ── Step 8: Return full response ──────────────────────
+        return {
+            "question":              req.question,
+            "conversation_id":       req.conversation_id,
+            "message_id":            saved_message["message_id"],
+            "intent_summary":        intent_summary,
+            "intent_flags": {
+                "analysis_type":       query_plan.get("analysis_type",           "single"),
+                "has_time_dimension":  query_plan.get("has_time_dimension",       False),
+                "has_phase_dimension": query_plan.get("has_phase_dimension",      False),
+                "has_comparison":      query_plan.get("has_comparison",           False),
+                "has_recent_form":     query_plan.get("has_recent_form",          False),
+                "has_fantasy":         query_plan.get("has_fantasy_dimension",    False),
+                "has_predictive":      query_plan.get("has_predictive_dimension", False),
+                "has_time_based":      query_plan.get("has_time_based_dimension", False),
+            },
+            "thresholds_relaxed":    thresholds_relaxed,
+            "sql_queries":           sql_queries,
+            "results":               query_results,
+            "tables":                tables,
+            "chart_config":          chart_config,
+            "insight":               insight,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        return {
+            "status":    "error",
+            "message":   str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
+# =========================================================
+# INTERPRET ROUTE  (minor update: user_id header)
+# =========================================================
+
+@app.post("/interpret")
+def interpret_question(
+    req: QueryRequest,
+    user_id: str = Depends(get_current_user)
+):
+    try:
+        intent  = classify_intent(req.question)
+        summary = generate_intent_summary(req.question, intent)
+
+        prompt = f"""
+You are Cricket_Scorer_AI. A user has asked: "{req.question}"
+
+Explain in 3-4 clear sentences:
+1. What cricket analysis this question is asking for
+2. Which players/teams/formats are involved
+3. What data dimensions will be analysed
 4. What the key insight will be
 
 Be specific. Use cricket domain language. No SQL, no database language.
