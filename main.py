@@ -32,21 +32,66 @@ from cricket_rules import CRICKET_RULES
 # =========================================================
 load_dotenv()
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.2.0"
 
 # =========================================================
-# VERTEX AI SETUP
+# VERTEX AI — HYBRID MODEL ARCHITECTURE
 # =========================================================
+#
+# Three-model split:
+#   • Planner   (Pro)   -> intent reasoning, SQL planning, fallback SQL
+#   • Validator (Pro)   -> SQL repair / re-planning on execution failure
+#   • Insight   (Flash) -> chart selection, insights, NL explanations
+#
+# Model names are env-overridable so we can upgrade (e.g. to gemini-3.5)
+# without touching application code.
+# =========================================================
+
 vertexai.init(
     project=os.getenv("GCP_PROJECT"),
-    location=os.getenv("GCP_LOCATION", "us-central1")
+    location=os.getenv("GCP_LOCATION", "us-central1"),
 )
 
-model = GenerativeModel("gemini-2.5-flash")
+PLANNER_MODEL_NAME   = os.getenv("PLANNER_MODEL",   "gemini-2.5-pro")
+VALIDATOR_MODEL_NAME = os.getenv("VALIDATOR_MODEL", "gemini-2.5-pro")
+INSIGHT_MODEL_NAME   = os.getenv("INSIGHT_MODEL",   "gemini-2.5-flash")
 
-PLAN_CONFIG    = GenerationConfig(temperature=0.1, top_p=0.9,  max_output_tokens=8192)
-INSIGHT_CONFIG = GenerationConfig(temperature=0.3, top_p=0.95, max_output_tokens=8192)
-CHART_CONFIG_CFG = GenerationConfig(temperature=0.1, top_p=0.9, max_output_tokens=2048)
+# Instantiate ONCE at module load. Never re-create inside request paths.
+planner_model   = GenerativeModel(PLANNER_MODEL_NAME)
+validator_model = GenerativeModel(VALIDATOR_MODEL_NAME)
+insight_model   = GenerativeModel(INSIGHT_MODEL_NAME)
+
+# ---- Generation configs ---------------------------------------------------
+# Planner: deterministic, large context for multi-CTE SQL plans.
+PLANNER_CONFIG = GenerationConfig(
+    temperature=0.0,
+    top_p=0.95,
+    max_output_tokens=16384,
+)
+
+# Validator: deterministic repair — same shape as planner, semantically distinct.
+VALIDATOR_CONFIG = GenerationConfig(
+    temperature=0.0,
+    top_p=0.95,
+    max_output_tokens=16384,
+)
+
+# Insight: a touch of creativity for prose; large budget for full reports.
+INSIGHT_CONFIG = GenerationConfig(
+    temperature=0.3,
+    top_p=0.95,
+    max_output_tokens=16384,
+)
+
+# Chart selection: deterministic JSON over a small payload.
+CHART_CONFIG_CFG = GenerationConfig(
+    temperature=0.1,
+    top_p=0.9,
+    max_output_tokens=4096,
+)
+
+# Backwards-compat alias — any older reference to PLAN_CONFIG still works.
+PLAN_CONFIG = PLANNER_CONFIG
 
 # =========================================================
 # FASTAPI
@@ -136,24 +181,50 @@ class ExcelQueryRequest(BaseModel):
 
 
 # =========================================================
-# LLM WRAPPER
+# LLM WRAPPERS — explicit model routing
 # =========================================================
-def llm(prompt: str, cfg: Optional[GenerationConfig] = None, retries: int = 2) -> str:
+#
+# Every call site picks an explicit model via `target`:
+#   "planner"   -> planner_model   (gemini-2.5-pro)
+#   "validator" -> validator_model (gemini-2.5-pro)
+#   "insight"   -> insight_model   (gemini-2.5-flash)   [default]
+# =========================================================
+
+def llm(prompt: str,
+        cfg: Optional[GenerationConfig] = None,
+        retries: int = 2,
+        target: str = "insight") -> str:
+    if target == "planner":
+        chosen = planner_model
+        chosen_name = PLANNER_MODEL_NAME
+    elif target == "validator":
+        chosen = validator_model
+        chosen_name = VALIDATOR_MODEL_NAME
+    else:
+        chosen = insight_model
+        chosen_name = INSIGHT_MODEL_NAME
+
     last_err = None
-    for attempt in range(retries + 1):
+    for _attempt in range(retries + 1):
         try:
             if cfg is not None:
-                resp = model.generate_content(prompt, generation_config=cfg)
+                resp = chosen.generate_content(prompt, generation_config=cfg)
             else:
-                resp = model.generate_content(prompt)
+                resp = chosen.generate_content(prompt)
             return (resp.text or "").strip()
         except Exception as e:
             last_err = e
-    raise RuntimeError(f"LLM call failed: {last_err}")
+    raise RuntimeError(f"LLM call failed ({target}/{chosen_name}): {last_err}")
 
 
-def llm_json(prompt: str, cfg: Optional[GenerationConfig] = None) -> Optional[dict]:
-    raw = llm(prompt, cfg=cfg or PLAN_CONFIG)
+def llm_json(prompt: str,
+             cfg: Optional[GenerationConfig] = None,
+             target: str = "planner") -> Optional[dict]:
+    """
+    JSON-structured calls default to the planner — they're almost always
+    plan/repair payloads. Chart selection overrides to 'insight'.
+    """
+    raw = llm(prompt, cfg=cfg or PLANNER_CONFIG, target=target)
     raw = raw.replace("```json", "").replace("```", "").strip()
     m = re.search(r'\{[\s\S]*\}', raw)
     if m:
@@ -856,7 +927,12 @@ USER QUESTION:
 {question}
 """
 
-    parsed = llm_json(prompt, cfg=PLAN_CONFIG)
+    # If we were invoked with error_feedback, this is a repair pass -> validator model.
+    # Otherwise it's an initial plan -> planner model. Both are Pro-grade.
+    _target = "validator" if error_feedback else "planner"
+    _cfg    = VALIDATOR_CONFIG if error_feedback else PLANNER_CONFIG
+    parsed = llm_json(prompt, cfg=_cfg, target=_target)
+
     if not parsed or "queries" not in parsed:
         return {
             "analysis_type": "single",
@@ -883,7 +959,8 @@ CRITICAL: Count dismissals with COUNT(DISTINCT CASE WHEN wicket IS NOT NULL THEN
 
 QUESTION: {question}
 """
-    sql = clean_sql_postgres(llm(prompt, cfg=PLAN_CONFIG))
+    # Last-resort SQL generation — keep on Pro for reliability.
+    sql = clean_sql_postgres(llm(prompt, cfg=PLANNER_CONFIG, target="planner"))
     if not sql.endswith(";"):
         sql += ";"
     return sql
@@ -933,6 +1010,7 @@ def execute_query_plan_pg(plan: dict, auto_repair: bool = True,
             repaired_ok = False
             if auto_repair:
                 try:
+                    # error_feedback routes this re-plan through the validator model.
                     fixed_plan = generate_query_plan(
                         question or q.get("purpose", ""),
                         intent=intent,
@@ -1278,7 +1356,11 @@ OUTPUT — STRICT JSON ONLY, NO PREAMBLE, NO MARKDOWN FENCES:
 USER QUESTION: """ + question
     )
 
-    parsed = llm_json(prompt, cfg=PLAN_CONFIG)
+    # Initial plan -> planner; repair (error_feedback set) -> validator. Both Pro-grade.
+    _target = "validator" if error_feedback else "planner"
+    _cfg    = VALIDATOR_CONFIG if error_feedback else PLANNER_CONFIG
+    parsed = llm_json(prompt, cfg=_cfg, target=_target)
+
     if not parsed or "queries" not in parsed:
         fb_sql = "SELECT * FROM nv_play LIMIT 20"
         if "batter" in columns and "runs" in columns:
@@ -1336,6 +1418,7 @@ def execute_duckdb_plan(plan: dict, df: pd.DataFrame, auto_repair: bool = True,
             err = str(e)
             if allow_repair and auto_repair and profile is not None:
                 try:
+                    # error_feedback routes this re-plan through the validator model.
                     fixed_plan = generate_duckdb_query_plan(
                         question, profile=profile,
                         resolved_entities=resolved_entities or {},
@@ -1429,7 +1512,8 @@ USER QUESTION: {question}
 DATABASE RESULTS: {compact}
 """
 
-    raw = llm(prompt, cfg=CHART_CONFIG_CFG)
+    # Chart classification is structural — Flash handles it cheaply.
+    raw = llm(prompt, cfg=CHART_CONFIG_CFG, target="insight")
     raw = raw.replace("```json", "").replace("```", "").strip()
     if raw.lower().strip() == "null":
         return None
@@ -1553,7 +1637,7 @@ def generate_cricket_insight(question: str,
             "---\n\n"
             "Keep total response under 200 words. Do not mention SQL or databases."
         )
-        return llm(failed_prompt, cfg=INSIGHT_CONFIG)
+        return llm(failed_prompt, cfg=INSIGHT_CONFIG, target="insight")
 
     # ── Build the main prompt ─────────────────────────────────────────────────
     tiny_instruction = (
@@ -1667,7 +1751,7 @@ Exactly 2 specific follow-up questions using the actual player/team names and fo
 """
     )
 
-    return llm(prompt, cfg=INSIGHT_CONFIG)
+    return llm(prompt, cfg=INSIGHT_CONFIG, target="insight")
 
 
 
@@ -1744,7 +1828,11 @@ def version():
     return {
         "version": APP_VERSION,
         "app": "Cricket_Scorer_AI",
-        "model": "gemini-2.5-flash",
+        "models": {
+            "planner":   PLANNER_MODEL_NAME,
+            "validator": VALIDATOR_MODEL_NAME,
+            "insight":   INSIGHT_MODEL_NAME,
+        },
         "status": "running",
         "server_time": datetime.datetime.utcnow().isoformat() + "Z",
     }
@@ -1752,7 +1840,7 @@ def version():
 
 @app.get("/gemini-test")
 def gemini_test():
-    return {"response": llm("Say hello from Cricket_Scorer_AI")}
+    return {"response": llm("Say hello from Cricket_Scorer_AI", target="insight")}
 
 
 @app.post("/generate-sql")
@@ -1936,7 +2024,7 @@ Explain in 3-4 clear sentences:
 
 Be specific. Use cricket domain language only.
 """
-        explanation = llm(prompt)
+        explanation = llm(prompt, cfg=INSIGHT_CONFIG, target="insight")
         return {
             "question": req.question,
             "intent_summary": summary,

@@ -1,16 +1,23 @@
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
-# Initialize Vertex AI
 vertexai.init(
     project="sportsanalytics-495612",
     location="us-central1"
 )
 
-# Load Gemini model
-model = GenerativeModel("gemini-2.5-flash")
+models = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-001",
+    "gemini-3.5-pro"
+]
 
-# Send test prompt
-response = model.generate_content("Say hello from Vertex AI in one sentence")
-
-print(response.text)
+for model_name in models:
+    try:
+        model = GenerativeModel(model_name)
+        response = model.generate_content("hello")
+        print(f"✅ {model_name}")
+    except Exception as e:
+        print(f"❌ {model_name}: {e}")
