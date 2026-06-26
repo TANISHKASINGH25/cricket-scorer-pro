@@ -32,19 +32,19 @@ from cricket_rules import CRICKET_RULES
 # =========================================================
 load_dotenv()
 
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.4.0"
 
 # =========================================================
 # VERTEX AI — HYBRID MODEL ARCHITECTURE
 # =========================================================
 vertexai.init(
     project=os.getenv("GCP_PROJECT"),
-    location=os.getenv("GCP_LOCATION", "us-central1"),
+    location=os.getenv("GCP_LOCATION", "europe-west2"),
 )
 
-PLANNER_MODEL_NAME   = os.getenv("PLANNER_MODEL",   "gemini-2.5-pro")
-VALIDATOR_MODEL_NAME = os.getenv("VALIDATOR_MODEL", "gemini-2.5-pro")
-INSIGHT_MODEL_NAME   = os.getenv("INSIGHT_MODEL",   "gemini-2.5-flash")
+PLANNER_MODEL_NAME   = os.getenv("PLANNER_MODEL",   "gemini-3.5-flash")
+VALIDATOR_MODEL_NAME = os.getenv("VALIDATOR_MODEL", "gemini-3.5-flash")
+INSIGHT_MODEL_NAME   = os.getenv("INSIGHT_MODEL",   "gemini-3.5-flash")
 
 planner_model   = GenerativeModel(PLANNER_MODEL_NAME)
 validator_model = GenerativeModel(VALIDATOR_MODEL_NAME)
@@ -735,6 +735,18 @@ HARD RULES:
       THEN match || '-' || innings::text ELSE NULL END) — NEVER COUNT(*) FILTER (WHERE wicket IS NOT NULL).
   12. Always include an innings_list query when average or dismissal count is asked.
 
+COMPLEX-QUESTION HANDLING (READ CAREFULLY):
+  - Decompose multi-part questions into MULTIPLE queries — one per sub-question — and set analysis_type="multi".
+  - For "compare A vs B", produce one query for A, one for B, plus one combined comparison query.
+  - For "best/worst", produce both rankings.
+  - For "trend over time", include a per-year breakdown AND an aggregate.
+  - For phase-based questions (powerplay / middle / death), include per-phase breakdown AND a totals row.
+  - For "vs <opposition / venue / format>", include the filtered metric AND the overall baseline for context.
+  - If the question is open-ended or interpretive, choose the most useful set of metrics (avg, SR, count, share)
+    that would let an analyst answer the question — never return a single trivial query.
+  - Use CTEs (WITH ...) freely for clarity when a query spans aggregation + ranking + join.
+  - If the question contains multiple entity names, include a per-entity query AND a head-to-head query.
+
 OUTPUT — STRICT JSON, NO PREAMBLE, NO MARKDOWN:
 
 {{
@@ -1178,6 +1190,13 @@ HARD SQL RULES (DuckDB):
          THEN match || '-' || CAST(innings AS VARCHAR) ELSE NULL END)
   4. Use ONLY columns from AVAILABLE COLUMNS.
 
+COMPLEX-QUESTION HANDLING:
+  - Decompose multi-part / open-ended questions into MULTIPLE focused queries (analysis_type="multi").
+  - For comparisons, trends, head-to-head, or phase analyses, produce ALL relevant breakdowns.
+  - For named entities, add an overall-baseline query for context alongside the filtered query.
+  - Use CTEs (WITH ...) when needed for clarity.
+  - Prefer richer multi-query plans over one monolithic query.
+
 OUTPUT — STRICT JSON ONLY:
 {"analysis_type": "single|multi", "intent": "1-2 sentences", "queries": [{"name": "snake_case", "purpose": "what and why", "sql": "SELECT ..."}]}
 
@@ -1355,6 +1374,15 @@ DUCKDB SQL RULES:
   - For percentages: ROUND(CAST(numerator AS DOUBLE) / NULLIF(denominator, 0) * 100, 2).
   - Always include a sample size column (COUNT(*)) alongside any rate/percentage.
 
+COMPLEX-QUESTION HANDLING:
+  - Decompose multi-part questions into MULTIPLE queries (analysis_type="multi").
+  - For "compare X vs Y" produce per-entity queries plus a side-by-side comparison.
+  - For "trend" produce a per-period breakdown PLUS an aggregate.
+  - For "what is the relationship between A and B" produce a correlation-style grouped query.
+  - For open-ended exploratory questions, return: (1) main answer, (2) distribution/profile, (3) breakdown.
+  - Always prefer multiple targeted queries over one giant query — it makes downstream insight generation richer.
+  - Use CTEs (WITH ...) for clarity when stacking aggregation + ranking.
+
 OUTPUT — STRICT JSON ONLY (no preamble, no markdown fences):
 {{
   "analysis_type": "single|multi",
@@ -1460,9 +1488,119 @@ DATABASE RESULTS: {compact}
     if m:
         raw = m.group(0)
     try:
-        return json.loads(raw)
+        cfg = json.loads(raw)
     except Exception:
         return None
+
+    return _sanitize_chart_config(cfg, query_results)
+
+
+def _sanitize_chart_config(cfg: Optional[dict], query_results: list) -> Optional[dict]:
+    """
+    Ensure chart_config is renderable:
+      - data rows actually contain x_key and at least one y_key with a numeric value
+      - if the LLM's data is broken/empty, rebuild it from the densest query result
+      - if no usable numeric metric exists, return None (frontend will skip the chart)
+    """
+    if not cfg or not isinstance(cfg, dict):
+        return None
+
+    # Find densest result set
+    best_rows = []
+    for r in query_results or []:
+        rows = r.get("results", []) or []
+        if len(rows) > len(best_rows):
+            best_rows = rows
+
+    if not best_rows:
+        return None
+
+    sample = best_rows[0] if isinstance(best_rows[0], dict) else {}
+    available_cols = list(sample.keys())
+    if not available_cols:
+        return None
+
+    # Detect numeric columns from sample (probe first 5 rows for robustness)
+    numeric_cols = []
+    text_cols = []
+    for col in available_cols:
+        is_num = False
+        for row in best_rows[:5]:
+            v = row.get(col)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                is_num = True
+                break
+        if is_num:
+            numeric_cols.append(col)
+        else:
+            text_cols.append(col)
+
+    if not numeric_cols:
+        return None  # No numeric data to chart
+
+    x_key = cfg.get("x_key")
+    y_keys = cfg.get("y_keys") or []
+    if isinstance(y_keys, str):
+        y_keys = [y_keys]
+
+    # Repair x_key if missing or invalid
+    if not x_key or x_key not in available_cols:
+        x_key = text_cols[0] if text_cols else available_cols[0]
+
+    # Repair y_keys: keep only real numeric columns
+    y_keys = [k for k in y_keys if k in numeric_cols]
+    if not y_keys:
+        # Fall back to first 1-2 numeric columns (excluding x_key)
+        y_keys = [k for k in numeric_cols if k != x_key][:2]
+    if not y_keys:
+        return None
+
+    # Rebuild data from actual rows (LLM-produced data is often placeholder-named)
+    cfg_data = cfg.get("data") or []
+    needs_rebuild = False
+    if not cfg_data:
+        needs_rebuild = True
+    else:
+        first = cfg_data[0] if isinstance(cfg_data[0], dict) else {}
+        if x_key not in first or not any(k in first for k in y_keys):
+            needs_rebuild = True
+        else:
+            # check that at least one row has a real numeric y value
+            has_num = False
+            for row in cfg_data[:5]:
+                for k in y_keys:
+                    v = row.get(k)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        has_num = True
+                        break
+                if has_num:
+                    break
+            if not has_num:
+                needs_rebuild = True
+
+    if needs_rebuild:
+        rebuilt = []
+        for row in best_rows[:25]:
+            new_row = {x_key: row.get(x_key)}
+            for k in y_keys:
+                v = row.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    new_row[k] = v
+                else:
+                    try:
+                        new_row[k] = float(v) if v is not None else 0
+                    except (TypeError, ValueError):
+                        new_row[k] = 0
+            rebuilt.append(new_row)
+        cfg["data"] = rebuilt
+
+    cfg["x_key"] = x_key
+    cfg["y_keys"] = y_keys
+    if not cfg.get("title"):
+        cfg["title"] = "Visual Analysis"
+    if "chart_type" not in cfg or cfg["chart_type"] not in {"bar", "bar_colored", "line", "area", "pie", "radar"}:
+        cfg["chart_type"] = "bar_colored" if len(y_keys) == 1 else "bar"
+    return cfg
 
 
 # =========================================================
@@ -1512,7 +1650,7 @@ QUERY RESULTS (your single source of truth — do not invent numbers):
 PRODUCE (strict JSON only, no preamble, no markdown fences):
 
 {{
-  "quick_answer": "<A direct, punchy answer to the question in 40-70 words. Lead with the headline number/name. Use **bold markdown** around 2-4 of the most important facts/numbers/names. Plain prose only, no lists, no headers. If no data found, say so clearly and suggest one rephrasing.>",
+  "quick_answer": "<A direct, punchy answer to the question in 40-80 words. Lead with the headline number/name/entity. Use **bold markdown** around 3-5 of the most important facts/numbers/names. Plain prose only, no lists, no headers. If results are empty, say so clearly in one sentence and suggest a rephrasing.>",
   "related_questions": [
     "<follow-up question 1>",
     "<follow-up question 2>",
@@ -1520,11 +1658,15 @@ PRODUCE (strict JSON only, no preamble, no markdown fences):
   ]
 }}
 
-QUICK ANSWER RULES:
-- Every number must come from the results — never invent.
-- Bold the most important facts using **double asterisks**.
-- 40-70 words MAX. Be direct.
-- No bullet points, no markdown headers, no tables. Just prose with bold highlights.
+QUICK ANSWER — STRICT RULES (failure to follow these is unacceptable):
+- ALWAYS extract real numbers/names from the results and put them in the answer.
+- NEVER write filler like "Detailed analysis is available below", "see the data table", "see the full insight", "the query returned results". The quick_answer IS the answer — it must stand alone.
+- Bold the most important facts using **double asterisks** (numbers, names, percentages, comparisons).
+- 40-80 words. Be direct, specific, and confident.
+- For simple questions: state the single headline answer with supporting numbers.
+- For complex questions (comparisons, trends, multi-entity): name the top 2-3 entities with their values, then add one trend/comparison sentence.
+- For "no data" results: explicitly say "**No matching records were found**" and suggest ONE concrete rephrasing.
+- No bullet points, no markdown headers, no tables. Just rich prose with bold highlights.
 
 RELATED QUESTIONS RULES:
 {related_style}
@@ -1541,15 +1683,131 @@ RELATED QUESTIONS RULES:
         rq = parsed.get("related_questions") or []
         # Clean and validate
         rq = [str(q).strip() for q in rq if isinstance(q, str) and q.strip()][:3]
-        if not qa:
-            raise ValueError("Empty quick_answer")
+        # Reject vague/non-answer placeholders
+        if (not qa
+            or "detailed analysis is available" in qa.lower()
+            or "see the data table" in qa.lower()
+            or "see the full insight" in qa.lower()
+            or len(qa) < 20):
+            raise ValueError("LLM returned vague/empty quick_answer")
         return {"quick_answer": qa, "related_questions": rq}
     except Exception:
-        # Graceful fallback
+        # Real, data-driven fallback — NEVER show generic placeholder
         return {
-            "quick_answer": "Detailed analysis is available below. The query returned results — see the data table and full insight for specifics.",
-            "related_questions": [],
+            "quick_answer": _build_fallback_quick_answer(question, query_results),
+            "related_questions": _build_fallback_related(question, query_results, generic=generic),
         }
+
+
+def _build_fallback_quick_answer(question: str, query_results: list) -> str:
+    """
+    Constructs a real, data-driven quick answer from query results when the LLM call fails.
+    Walks the densest result, picks the headline row/value, bolds key tokens.
+    """
+    try:
+        # Find the most informative result set
+        best = None
+        best_size = 0
+        for r in query_results or []:
+            rows = r.get("results", []) or []
+            if len(rows) > best_size:
+                best = r
+                best_size = len(rows)
+
+        if not best or not best.get("results"):
+            return ("**No matching records were found** for your question. "
+                    "Try broadening the filters (e.g. remove a year, team, or venue constraint) "
+                    "or rephrase to use a different metric.")
+
+        rows = best["results"]
+        purpose = best.get("purpose") or best.get("query_name") or "the query"
+        first = rows[0] if isinstance(rows[0], dict) else {}
+        keys = list(first.keys())
+
+        # Identify likely entity column (first non-numeric key) and numeric metrics
+        entity_key = None
+        numeric_keys = []
+        for k in keys:
+            v = first.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                numeric_keys.append(k)
+            elif entity_key is None and v is not None:
+                entity_key = k
+
+        # Build prose
+        if len(rows) == 1 and numeric_keys:
+            # Single-row scalar style
+            parts = []
+            for k in numeric_keys[:3]:
+                val = first.get(k)
+                if val is None:
+                    continue
+                pretty_k = k.replace("_", " ")
+                parts.append(f"**{pretty_k}** = **{val}**")
+            label = ""
+            if entity_key and first.get(entity_key) is not None:
+                label = f"For **{first.get(entity_key)}**, "
+            if parts:
+                return f"{label}{', '.join(parts)} (based on {purpose})."
+
+        if entity_key and numeric_keys:
+            top = rows[0]
+            metric = numeric_keys[0]
+            second_metric = numeric_keys[1] if len(numeric_keys) > 1 else None
+            top_name = top.get(entity_key)
+            top_val = top.get(metric)
+            pretty_metric = metric.replace("_", " ")
+            text = f"**{top_name}** leads with **{top_val} {pretty_metric}**"
+            if second_metric and top.get(second_metric) is not None:
+                text += f" (**{top.get(second_metric)} {second_metric.replace('_',' ')}**)"
+            if len(rows) >= 2:
+                second = rows[1]
+                text += f", followed by **{second.get(entity_key)}** at **{second.get(metric)}**"
+            if len(rows) >= 3:
+                third = rows[2]
+                text += f" and **{third.get(entity_key)}** at **{third.get(metric)}**"
+            text += f". Total of **{len(rows)} records** returned."
+            return text
+
+        # Last resort — describe shape
+        return (f"Query returned **{len(rows)} rows** with columns "
+                f"**{', '.join(keys[:6])}**. See the table below for the full breakdown.")
+    except Exception:
+        return ("**Results were returned** but a concise summary could not be generated. "
+                "See the table and chart below for details.")
+
+
+def _build_fallback_related(question: str, query_results: list, generic: bool = False) -> List[str]:
+    """Construct three reasonable follow-up questions based on result columns."""
+    try:
+        best = None
+        for r in query_results or []:
+            if r.get("results"):
+                best = r
+                break
+        if not best:
+            return []
+        rows = best["results"]
+        if not rows or not isinstance(rows[0], dict):
+            return []
+        keys = list(rows[0].keys())
+        entity = next((k for k in keys
+                       if not isinstance(rows[0].get(k), (int, float, bool))), None)
+        if generic:
+            base = [
+                f"What is the trend of {keys[1] if len(keys) > 1 else keys[0]} over time?" if len(keys) > 1 else f"Show the distribution of {keys[0]}.",
+                f"Compare the top 5 by {keys[1] if len(keys) > 1 else keys[0]}.",
+                f"Which {entity or 'category'} has the highest variation?",
+            ]
+        else:
+            base = [
+                f"How does {rows[0].get(entity) if entity else 'the leader'} compare against other teams?",
+                f"Show year-by-year trend for the top entities in this list.",
+                f"Break this down by venue or phase (Powerplay/Middle/Death).",
+            ]
+        return [q for q in base if q][:3]
+    except Exception:
+        return []
 
 
 # =========================================================

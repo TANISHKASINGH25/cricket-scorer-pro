@@ -3,7 +3,7 @@ from vertexai.generative_models import GenerativeModel
 
 vertexai.init(
     project="sportsanalytics-495612",
-    location="us-central1"
+    location="europe-west2"
 )
 
 models = [
@@ -17,7 +17,7 @@ models = [
 for model_name in models:
     try:
         model = GenerativeModel(model_name)
-        response = model.generate_content("hello")
-        print(f"✅ {model_name}")
+        response = model.generate_content("Hello")
+        print(f"✅ {model_name}: {response.text}")
     except Exception as e:
         print(f"❌ {model_name}: {e}")
