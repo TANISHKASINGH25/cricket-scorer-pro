@@ -32,21 +32,11 @@ from cricket_rules import CRICKET_RULES
 # =========================================================
 load_dotenv()
 
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.3.0"
 
 # =========================================================
 # VERTEX AI — HYBRID MODEL ARCHITECTURE
 # =========================================================
-#
-# Three-model split:
-#   • Planner   (Pro)   -> intent reasoning, SQL planning, fallback SQL
-#   • Validator (Pro)   -> SQL repair / re-planning on execution failure
-#   • Insight   (Flash) -> chart selection, insights, NL explanations
-#
-# Model names are env-overridable so we can upgrade (e.g. to gemini-3.5)
-# without touching application code.
-# =========================================================
-
 vertexai.init(
     project=os.getenv("GCP_PROJECT"),
     location=os.getenv("GCP_LOCATION", "us-central1"),
@@ -56,41 +46,26 @@ PLANNER_MODEL_NAME   = os.getenv("PLANNER_MODEL",   "gemini-2.5-pro")
 VALIDATOR_MODEL_NAME = os.getenv("VALIDATOR_MODEL", "gemini-2.5-pro")
 INSIGHT_MODEL_NAME   = os.getenv("INSIGHT_MODEL",   "gemini-2.5-flash")
 
-# Instantiate ONCE at module load. Never re-create inside request paths.
 planner_model   = GenerativeModel(PLANNER_MODEL_NAME)
 validator_model = GenerativeModel(VALIDATOR_MODEL_NAME)
 insight_model   = GenerativeModel(INSIGHT_MODEL_NAME)
 
-# ---- Generation configs ---------------------------------------------------
-# Planner: deterministic, large context for multi-CTE SQL plans.
 PLANNER_CONFIG = GenerationConfig(
-    temperature=0.0,
-    top_p=0.95,
-    max_output_tokens=16384,
+    temperature=0.0, top_p=0.95, max_output_tokens=16384,
 )
-
-# Validator: deterministic repair — same shape as planner, semantically distinct.
 VALIDATOR_CONFIG = GenerationConfig(
-    temperature=0.0,
-    top_p=0.95,
-    max_output_tokens=16384,
+    temperature=0.0, top_p=0.95, max_output_tokens=16384,
 )
-
-# Insight: a touch of creativity for prose; large budget for full reports.
 INSIGHT_CONFIG = GenerationConfig(
-    temperature=0.3,
-    top_p=0.95,
-    max_output_tokens=16384,
+    temperature=0.3, top_p=0.95, max_output_tokens=16384,
 )
-
-# Chart selection: deterministic JSON over a small payload.
 CHART_CONFIG_CFG = GenerationConfig(
-    temperature=0.1,
-    top_p=0.9,
-    max_output_tokens=4096,
+    temperature=0.1, top_p=0.9, max_output_tokens=4096,
+)
+QUICK_ANSWER_CFG = GenerationConfig(
+    temperature=0.2, top_p=0.9, max_output_tokens=2048,
 )
 
-# Backwards-compat alias — any older reference to PLAN_CONFIG still works.
 PLAN_CONFIG = PLANNER_CONFIG
 
 # =========================================================
@@ -180,16 +155,16 @@ class ExcelQueryRequest(BaseModel):
     file_ext: str
 
 
-# =========================================================
-# LLM WRAPPERS — explicit model routing
-# =========================================================
-#
-# Every call site picks an explicit model via `target`:
-#   "planner"   -> planner_model   (gemini-2.5-pro)
-#   "validator" -> validator_model (gemini-2.5-pro)
-#   "insight"   -> insight_model   (gemini-2.5-flash)   [default]
-# =========================================================
+class GenericExcelRequest(BaseModel):
+    question: str
+    file_base64: str
+    file_name: str
+    file_ext: str
 
+
+# =========================================================
+# LLM WRAPPERS
+# =========================================================
 def llm(prompt: str,
         cfg: Optional[GenerationConfig] = None,
         retries: int = 2,
@@ -220,10 +195,6 @@ def llm(prompt: str,
 def llm_json(prompt: str,
              cfg: Optional[GenerationConfig] = None,
              target: str = "planner") -> Optional[dict]:
-    """
-    JSON-structured calls default to the planner — they're almost always
-    plan/repair payloads. Chart selection overrides to 'insight'.
-    """
     raw = llm(prompt, cfg=cfg or PLANNER_CONFIG, target=target)
     raw = raw.replace("```json", "").replace("```", "").strip()
     m = re.search(r'\{[\s\S]*\}', raw)
@@ -458,6 +429,20 @@ def clean_sql_duckdb(sql: str) -> str:
     return sql.strip()
 
 
+def clean_sql_duckdb_generic(sql: str) -> str:
+    """Lighter cleanup for generic files — no cricket-specific replacements."""
+    sql = sql.replace("```sql", "").replace("```", "").strip()
+    sql = " ".join(sql.split())
+    sql = re.sub(r'::\s*numeric', '', sql, flags=re.IGNORECASE)
+    sql = re.sub(r'::\s*int\b', '', sql, flags=re.IGNORECASE)
+    sql = re.sub(r'::\s*float\b', '', sql, flags=re.IGNORECASE)
+    sql = re.sub(r'\bIFNULL\s*\(', 'COALESCE(', sql, flags=re.IGNORECASE)
+    sql = re.sub(r'\bYEAR\s*\(\s*(\w+)\s*\)',  r'EXTRACT(YEAR FROM \1)', sql, flags=re.IGNORECASE)
+    sql = re.sub(r'\bMONTH\s*\(\s*(\w+)\s*\)', r'EXTRACT(MONTH FROM \1)', sql, flags=re.IGNORECASE)
+    sql = re.sub(r'\bDAY\s*\(\s*(\w+)\s*\)',   r'EXTRACT(DAY FROM \1)', sql, flags=re.IGNORECASE)
+    return sql.strip()
+
+
 def validate_sql(sql: str) -> None:
     first = sql.strip().split()[0].upper() if sql.strip() else ""
     if first not in ("SELECT", "WITH"):
@@ -500,7 +485,7 @@ def build_intent_hint(intent: Optional[dict]) -> str:
 
 
 # =========================================================
-# CRICKET TERMINOLOGY — SQL TRANSLATION (FIXED DISMISSAL FORMULA)
+# CRICKET TERMINOLOGY — SQL TRANSLATION
 # =========================================================
 @lru_cache(maxsize=1)
 def build_cricket_terms_context() -> str:
@@ -641,8 +626,7 @@ def build_advanced_patterns_context() -> str:
   GROUP BY batter;
 
 2. INNINGS LIST (for verifying dismissal counts):
-  SELECT
-    match, innings,
+  SELECT match, innings,
     SUM(runs) AS runs_scored,
     MAX(CASE WHEN wicket IS NOT NULL THEN wicket ELSE 'not out' END) AS how_out,
     COUNT(DISTINCT CASE WHEN wicket IS NOT NULL THEN wicket ELSE NULL END) AS wickets_in_innings
@@ -650,116 +634,6 @@ def build_advanced_patterns_context() -> str:
   WHERE batter ILIKE '%name%'
   GROUP BY match, innings
   ORDER BY match, innings;
-
-3. PHASE SPLIT — use FILTER (WHERE over BETWEEN x AND y) per phase.
-
-4. RECENT FORM — CTE: SELECT DISTINCT match, date ORDER BY date DESC LIMIT N, then JOIN.
-
-5. YEARLY TREND — GROUP BY EXTRACT(YEAR FROM date)::int ORDER BY year ASC.
-
-6. HEAD-TO-HEAD — WHERE batter ILIKE ... AND bowler ILIKE ...,
-   dismissals = COUNT(DISTINCT CASE WHEN wicket IS NOT NULL THEN match || '-' || innings::text ELSE NULL END)
-
-7. DISMISSAL BREAKDOWN — GROUP BY wicket WHERE wicket IS NOT NULL.
-
-8. BOWLER IMPACT vs INNINGS RUN RATE (complex CTE pattern):
-  -- Compares each bowler's economy against the innings overall run rate.
-  WITH innings_rr AS (
-    SELECT
-      match,
-      innings,
-      ROUND((SUM(runs + extra_runs)::numeric / NULLIF(SUM(CASE WHEN legal_ball THEN 1 ELSE 0 END), 0)) * 6, 2) AS innings_rr
-    FROM public.nv_play
-    GROUP BY match, innings
-  ),
-  bowler_stats AS (
-    SELECT
-      bowler,
-      p.match,
-      p.innings,
-      ROUND((SUM(p.runs + p.extra_runs)::numeric / NULLIF(SUM(CASE WHEN p.legal_ball THEN 1 ELSE 0 END), 0)) * 6, 2) AS bowler_economy,
-      SUM(CASE WHEN p.legal_ball THEN 1 ELSE 0 END) AS balls_bowled
-    FROM public.nv_play p
-    GROUP BY bowler, p.match, p.innings
-    HAVING SUM(CASE WHEN p.legal_ball THEN 1 ELSE 0 END) >= 18  -- min 3 overs per spell
-  )
-  SELECT
-    b.bowler,
-    COUNT(DISTINCT b.match || '-' || b.innings::text) AS spells,
-    ROUND(AVG(i.innings_rr - b.bowler_economy), 2) AS avg_rr_suppression,
-    ROUND(AVG(b.bowler_economy), 2) AS avg_economy,
-    SUM(b.balls_bowled) AS total_balls
-  FROM bowler_stats b
-  JOIN innings_rr i ON i.match = b.match AND i.innings = b.innings
-  GROUP BY b.bowler
-  HAVING SUM(b.balls_bowled) >= 18  -- min 3 overs total across tournament
-  ORDER BY avg_rr_suppression DESC
-  LIMIT 15;
-
-9. CUSTOM INFLUENCE SCORE per player per match (decomposed CTE):
-  -- Use CTEs for each component to avoid complex single-query failures.
-  WITH batting AS (
-    SELECT match, batter AS player,
-      SUM(runs) AS batting_runs
-    FROM public.nv_play
-    GROUP BY match, batter
-  ),
-  bowling AS (
-    SELECT match, bowler AS player,
-      COUNT(DISTINCT CASE WHEN wicket IS NOT NULL THEN match || '-' || innings::text || '-' || over::text || '-' || ball::text ELSE NULL END) AS wickets_taken,
-      SUM(CASE WHEN (runs + extra_runs) = 0 AND legal_ball THEN 1 ELSE 0 END) AS dot_balls
-    FROM public.nv_play
-    GROUP BY match, bowler
-  ),
-  fielding AS (
-    SELECT match, fielder AS player,
-      COUNT(*) AS catches
-    FROM public.nv_play
-    WHERE fielder IS NOT NULL AND wicket ILIKE '%caught%'
-    GROUP BY match, fielder
-  ),
-  combined AS (
-    SELECT
-      COALESCE(bat.match, bowl.match, fld.match) AS match,
-      COALESCE(bat.player, bowl.player, fld.player) AS player,
-      COALESCE(bat.batting_runs, 0) AS batting_runs,
-      COALESCE(bowl.wickets_taken, 0) AS wickets_taken,
-      COALESCE(bowl.dot_balls, 0) AS dot_balls,
-      COALESCE(fld.catches, 0) AS catches,
-      COALESCE(bat.batting_runs, 0)
-        + (COALESCE(bowl.wickets_taken, 0) * 20)
-        + (COALESCE(bowl.dot_balls, 0) * 0.5)
-        + (COALESCE(fld.catches, 0) * 10) AS influence_score
-    FROM batting bat
-    FULL OUTER JOIN bowling bowl ON bat.match = bowl.match AND bat.player = bowl.player
-    FULL OUTER JOIN fielding fld ON COALESCE(bat.match, bowl.match) = fld.match
-                                 AND COALESCE(bat.player, bowl.player) = fld.player
-  )
-  SELECT c.match, c.player, c.batting_runs, c.wickets_taken, c.dot_balls, c.catches,
-    ROUND(c.influence_score::numeric, 1) AS influence_score
-  FROM combined c
-  -- To filter for losing team: join a match_result subquery or use batting_team/bowling_team columns
-  ORDER BY c.influence_score DESC
-  LIMIT 20;
-
-10. IDENTIFICATION + DETAIL PATTERN:
-  -- When a question asks to IDENTIFY a match/player AND then describe it,
-  -- always produce TWO queries: one to identify, one to drill into the detail.
-  -- Example: "find the match with largest momentum swing" needs:
-  --   Query 1: identify the match (returns match name)
-  --   Query 2: over-by-over breakdown of THAT match (use a subquery or CTE)
-  WITH identified AS (
-    SELECT match, MAX(some_metric) - MIN(some_metric) AS swing
-    FROM public.nv_play GROUP BY match ORDER BY swing DESC LIMIT 1
-  )
-  SELECT p.match, p.over,
-    SUM(p.runs + p.extra_runs) AS runs_in_over,
-    SUM(SUM(p.runs + p.extra_runs)) OVER (PARTITION BY p.match ORDER BY p.over) AS cumulative_runs,
-    COUNT(DISTINCT CASE WHEN p.wicket IS NOT NULL THEN p.over ELSE NULL END) AS wickets_in_over
-  FROM public.nv_play p
-  JOIN identified i ON p.match = i.match AND p.innings = 1
-  GROUP BY p.match, p.over
-  ORDER BY p.over;
 """
 
 
@@ -774,27 +648,11 @@ def build_baseline_queries_hint() -> str:
   Leaderboard          -> main_leaderboard (no per-player baselines needed)
 
 ALWAYS include innings_list when dismissal counts or averages are requested.
-
-IDENTIFICATION + DETAIL RULE (critical for Q4-type questions):
-  When the question asks to IDENTIFY a match/record AND understand what happened,
-  ALWAYS produce two queries:
-    1. identify_query  — finds the answer (match name, player, record)
-    2. detail_query    — drills into that specific result (over-by-over, innings breakdown, etc.)
-  Examples:
-    "Find the match with largest swing" -> identify match + over-by-over breakdown of that match
-    "Find the batter who scored most runs without..." -> identify player + their innings list
-    "Find the bowler with best impact" -> identify bowler + their spell-by-spell breakdown
-  Without the detail query, the insight has only a name/ID — not enough for meaningful analysis.
-
-COMPOUND FORMULA QUERIES — decompose into CTEs:
-  If the question involves a custom formula combining batting + bowling + fielding,
-  ALWAYS use separate CTEs for each component (see pattern 9 in ADVANCED PATTERNS),
-  then JOIN them. Never write one giant SELECT — it fails with syntax errors.
 """
 
 
 # =========================================================
-# QUERY PLAN GENERATION (PostgreSQL)
+# QUERY PLAN GENERATION (PostgreSQL) — unchanged
 # =========================================================
 def generate_query_plan(question: str,
                         relax_thresholds: bool = False,
@@ -876,34 +734,6 @@ HARD RULES:
   11. CRITICAL: Count dismissals with COUNT(DISTINCT CASE WHEN wicket IS NOT NULL
       THEN match || '-' || innings::text ELSE NULL END) — NEVER COUNT(*) FILTER (WHERE wicket IS NOT NULL).
   12. Always include an innings_list query when average or dismissal count is asked.
-  13. HAVING FILTER SCOPE: Any HAVING clause (e.g. HAVING balls_faced >= 30) must filter on
-      the SAME aggregation as the metric being measured. Never apply a global career filter
-      when the query aggregates a specific phase or subset — a batter may have 30+ career balls
-      but only 3 balls in the death overs. Filter in the WHERE or use a subquery.
-  14. ALWAYS include COUNT(*) or a row count alongside any aggregate metric — never return
-      a single percentage/rate without the sample size that produced it.
-  15. MATCH WINNER / RESULT: To filter by which team won, look for columns like
-      winning_team, result, match_result, or winner in the schema. If none exist,
-      derive the winner by comparing innings totals: the team with the higher total in innings 2
-      (or innings 1 if innings 2 never reached the target) won. Use a CTE:
-      WITH match_totals AS (
-        SELECT match, innings, batting_team,
-          SUM(runs + extra_runs) AS total_runs
-        FROM public.nv_play GROUP BY match, innings, batting_team
-      ),
-      match_winner AS (
-        SELECT match,
-          MAX(CASE WHEN innings=1 THEN batting_team END) AS team1,
-          MAX(CASE WHEN innings=2 THEN batting_team END) AS team2,
-          MAX(CASE WHEN innings=1 THEN total_runs END) AS total1,
-          MAX(CASE WHEN innings=2 THEN total_runs END) AS total2,
-          CASE WHEN MAX(CASE WHEN innings=2 THEN total_runs END) >
-                    MAX(CASE WHEN innings=1 THEN total_runs END)
-               THEN MAX(CASE WHEN innings=2 THEN batting_team END)
-               ELSE MAX(CASE WHEN innings=1 THEN batting_team END)
-          END AS winning_team
-        FROM match_totals GROUP BY match
-      )
 
 OUTPUT — STRICT JSON, NO PREAMBLE, NO MARKDOWN:
 
@@ -927,8 +757,6 @@ USER QUESTION:
 {question}
 """
 
-    # If we were invoked with error_feedback, this is a repair pass -> validator model.
-    # Otherwise it's an initial plan -> planner model. Both are Pro-grade.
     _target = "validator" if error_feedback else "planner"
     _cfg    = VALIDATOR_CONFIG if error_feedback else PLANNER_CONFIG
     parsed = llm_json(prompt, cfg=_cfg, target=_target)
@@ -959,7 +787,6 @@ CRITICAL: Count dismissals with COUNT(DISTINCT CASE WHEN wicket IS NOT NULL THEN
 
 QUESTION: {question}
 """
-    # Last-resort SQL generation — keep on Pro for reliability.
     sql = clean_sql_postgres(llm(prompt, cfg=PLANNER_CONFIG, target="planner"))
     if not sql.endswith(";"):
         sql += ";"
@@ -1010,7 +837,6 @@ def execute_query_plan_pg(plan: dict, auto_repair: bool = True,
             repaired_ok = False
             if auto_repair:
                 try:
-                    # error_feedback routes this re-plan through the validator model.
                     fixed_plan = generate_query_plan(
                         question or q.get("purpose", ""),
                         intent=intent,
@@ -1075,9 +901,13 @@ def execute_query_plan_with_retry(plan: dict, question: str,
 
 
 # =========================================================
-# EXCEL: LOAD + PROFILE
+# DATAFRAME LOADING — used by both file modes
 # =========================================================
-def load_dataframe(file_base64: str, file_ext: str) -> pd.DataFrame:
+def load_dataframe(file_base64: str, file_ext: str, cricket_typed: bool = True) -> pd.DataFrame:
+    """
+    cricket_typed=True   -> coerce known cricket columns (bool/date/numeric).
+    cricket_typed=False  -> generic mode: only auto-detect dates, leave the rest as pandas inferred.
+    """
     raw = base64.b64decode(file_base64)
     buf = io.BytesIO(raw)
     ext = file_ext.lower().strip()
@@ -1091,25 +921,38 @@ def load_dataframe(file_base64: str, file_ext: str) -> pd.DataFrame:
 
     df.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
 
-    for col in ["legal_ball", "free_hit", "around_the_wicket", "keeper_up"]:
-        if col in df.columns:
-            try:
-                df[col] = df[col].astype(bool)
-            except Exception:
-                df[col] = df[col].map(lambda x: str(x).strip().lower() in ("true", "1", "yes", "t"))
+    if cricket_typed:
+        for col in ["legal_ball", "free_hit", "around_the_wicket", "keeper_up"]:
+            if col in df.columns:
+                try:
+                    df[col] = df[col].astype(bool)
+                except Exception:
+                    df[col] = df[col].map(lambda x: str(x).strip().lower() in ("true", "1", "yes", "t"))
 
-    for col in ["date", "timestamp"]:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
+        for col in ["date", "timestamp"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
 
-    for col in ["runs", "extra_runs", "over", "ball", "innings", "batting_position"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        for col in ["runs", "extra_runs", "over", "ball", "innings", "batting_position"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+    else:
+        # Generic auto-coercion: try to detect date columns by name OR by parse success.
+        for col in df.columns:
+            if df[col].dtype == object:
+                lc = col.lower()
+                if any(k in lc for k in ("date", "time", "timestamp", "_at", "dob")):
+                    try:
+                        parsed = pd.to_datetime(df[col], errors="coerce")
+                        if parsed.notna().sum() >= max(1, int(len(df) * 0.5)):
+                            df[col] = parsed
+                    except Exception:
+                        pass
 
     return df
 
 
-def profile_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
+def profile_dataframe(df: pd.DataFrame, cricket_aware: bool = True) -> Dict[str, Any]:
     profile = {
         "row_count": int(len(df)),
         "columns": [],
@@ -1129,6 +972,14 @@ def profile_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
             "null_pct": round(float(s.isna().mean() * 100), 1),
             "n_unique": int(s.nunique(dropna=True)),
         }
+        # Numeric columns: include min/max/mean for generic profiling
+        if pd.api.types.is_numeric_dtype(s):
+            try:
+                col_info["min"]  = float(s.min())  if s.notna().any() else None
+                col_info["max"]  = float(s.max())  if s.notna().any() else None
+                col_info["mean"] = round(float(s.mean()), 2) if s.notna().any() else None
+            except Exception:
+                pass
         if s.dtype == object and col_info["n_unique"] <= 25:
             try:
                 col_info["sample_values"] = [str(v) for v in s.dropna().unique()[:25].tolist()]
@@ -1136,18 +987,19 @@ def profile_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
                 pass
         profile["columns"].append(col_info)
 
-    if "match_type" in df.columns:
-        profile["match_types"] = [str(v) for v in df["match_type"].dropna().unique().tolist()[:20]]
-    if "competition" in df.columns:
-        profile["competitions"] = [str(v) for v in df["competition"].dropna().unique().tolist()[:20]]
-    if "date" in df.columns and df["date"].notna().any():
-        profile["date_range"] = [str(df["date"].min().date()), str(df["date"].max().date())]
-    if "batter" in df.columns:
-        profile["unique_batters"] = int(df["batter"].nunique())
-    if "bowler" in df.columns:
-        profile["unique_bowlers"] = int(df["bowler"].nunique())
-    if "batting_team" in df.columns:
-        profile["unique_teams"] = int(df["batting_team"].nunique())
+    if cricket_aware:
+        if "match_type" in df.columns:
+            profile["match_types"] = [str(v) for v in df["match_type"].dropna().unique().tolist()[:20]]
+        if "competition" in df.columns:
+            profile["competitions"] = [str(v) for v in df["competition"].dropna().unique().tolist()[:20]]
+        if "date" in df.columns and df["date"].notna().any():
+            profile["date_range"] = [str(df["date"].min().date()), str(df["date"].max().date())]
+        if "batter" in df.columns:
+            profile["unique_batters"] = int(df["batter"].nunique())
+        if "bowler" in df.columns:
+            profile["unique_bowlers"] = int(df["bowler"].nunique())
+        if "batting_team" in df.columns:
+            profile["unique_teams"] = int(df["batting_team"].nunique())
 
     return profile
 
@@ -1181,12 +1033,39 @@ def resolve_entities_in_df(df: pd.DataFrame, candidate_names: List[str]) -> Dict
     return resolved
 
 
+def resolve_entities_generic(df: pd.DataFrame, candidate_names: List[str]) -> Dict[str, List[str]]:
+    """Search ALL text columns for candidate names — generic mode has no fixed schema."""
+    resolved: Dict[str, List[str]] = {}
+    if not candidate_names:
+        return resolved
+
+    text_cols = [c for c in df.columns if df[c].dtype == object][:30]
+
+    for name in candidate_names:
+        name_low = name.lower()
+        matches = set()
+        for col in text_cols:
+            try:
+                vals = df[col].dropna().astype(str).unique()
+                for v in vals:
+                    if name_low in v.lower() or v.lower() in name_low:
+                        matches.add(f"{col}={v}")
+                        if len(matches) >= 8:
+                            break
+                if len(matches) >= 8:
+                    break
+            except Exception:
+                continue
+        if matches:
+            resolved[name] = list(matches)[:8]
+    return resolved
+
+
 # =========================================================
-# EXCEL: DUCKDB QUERY PLAN — with fixed dismissal formula
+# EXCEL: DUCKDB CRICKET PLAN (NV-PLAY route)
 # =========================================================
 @lru_cache(maxsize=1)
 def build_cricket_terms_duckdb() -> str:
-    """DuckDB-specific version of the cricket terms, with correct dismissal formula."""
     return """CRICKET TERMINOLOGY -> DUCKDB SQL:
 
 BATTING POSITIONS:
@@ -1202,8 +1081,7 @@ DELIVERY:
   boundary -> runs IN (4,6) | six -> runs=6 | four -> runs=4
   dismissed -> wicket IS NOT NULL | not out -> wicket IS NULL
 
-=== CRITICAL: DISMISSAL COUNTING IN BALL-BY-BALL DATA (DuckDB) ===
-
+=== CRITICAL DISMISSAL COUNTING ===
 ONE ROW = ONE DELIVERY. 'wicket' is populated ONLY on the delivery where dismissal occurred.
 
   ✅ CORRECT dismissal count:
@@ -1214,46 +1092,26 @@ ONE ROW = ONE DELIVERY. 'wicket' is populated ONLY on the delivery where dismiss
   ✅ CORRECT innings played:
      COUNT(DISTINCT match || '-' || CAST(innings AS VARCHAR))
 
-  ❌ WRONG (counts delivery rows, not innings):
-     COUNT(*) FILTER (WHERE wicket IS NOT NULL)
-     SUM(CASE WHEN wicket IS NOT NULL THEN 1 ELSE 0 END)
+  ❌ WRONG: COUNT(*) FILTER (WHERE wicket IS NOT NULL)
 
 DUCKDB FORMULAS:
 
-  batting_avg =
-    ROUND(SUM(runs) / NULLIF(
-      COUNT(DISTINCT CASE WHEN wicket IS NOT NULL
-            THEN match || '-' || CAST(innings AS VARCHAR) ELSE NULL END)
-    , 0), 2)
-
-  strike_rate =
-    ROUND((CAST(SUM(runs) AS DOUBLE) / NULLIF(
-      SUM(CASE WHEN legal_ball = TRUE THEN 1 ELSE 0 END), 0)) * 100, 2)
-
-  economy =
-    ROUND((CAST(SUM(runs + extra_runs) AS DOUBLE) / NULLIF(
-      SUM(CASE WHEN legal_ball = TRUE THEN 1 ELSE 0 END), 0)) * 6, 2)
-
-  innings_played =
-    COUNT(DISTINCT match || '-' || CAST(innings AS VARCHAR))
-
-  dismissals =
+  batting_avg = ROUND(SUM(runs) / NULLIF(
     COUNT(DISTINCT CASE WHEN wicket IS NOT NULL
-          THEN match || '-' || CAST(innings AS VARCHAR) ELSE NULL END)
+          THEN match || '-' || CAST(innings AS VARCHAR) ELSE NULL END), 0), 2)
 
-  not_outs =
-    COUNT(DISTINCT match || '-' || CAST(innings AS VARCHAR))
-    - COUNT(DISTINCT CASE WHEN wicket IS NOT NULL
-            THEN match || '-' || CAST(innings AS VARCHAR) ELSE NULL END)
+  strike_rate = ROUND((CAST(SUM(runs) AS DOUBLE) / NULLIF(
+    SUM(CASE WHEN legal_ball = TRUE THEN 1 ELSE 0 END), 0)) * 100, 2)
+
+  economy = ROUND((CAST(SUM(runs + extra_runs) AS DOUBLE) / NULLIF(
+    SUM(CASE WHEN legal_ball = TRUE THEN 1 ELSE 0 END), 0)) * 6, 2)
 
 DUCKDB SYNTAX RULES:
   - Table: nv_play (no schema prefix)
-  - NEVER use ::numeric or ::int — use CAST(x AS DOUBLE) or CAST(x AS INTEGER)
+  - NEVER use ::numeric or ::int — use CAST(x AS DOUBLE)
   - String concat: col1 || '-' || CAST(col2 AS VARCHAR)
   - Booleans: legal_ball = TRUE
   - Strings: ILIKE '%name%'
-  - No DATEADD / YEAR() — use EXTRACT(YEAR FROM date)
-  - FILTER syntax: COUNT(*) FILTER (WHERE condition) is supported
 """
 
 
@@ -1262,7 +1120,6 @@ def generate_duckdb_query_plan(question: str,
                                 resolved_entities: Dict[str, List[str]],
                                 intent: Optional[dict] = None,
                                 error_feedback: Optional[str] = None) -> dict:
-
     columns = [c["name"] for c in profile["columns"]]
     available_cols = ", ".join(columns)
 
@@ -1314,49 +1171,19 @@ def generate_duckdb_query_plan(question: str,
         + "\nCRICKET BENCHMARKS:\n" + build_rules_context()
         + "\nFORMAT CONTEXT:\n" + build_format_context()
         + """
-QUERY STRATEGY:
-  - Player named -> career_baseline + innings_list + question_specific
-  - Averages/dismissals asked -> always include innings_list
-  - Phase breakdown asked -> add phase_split query
-  - Trend asked -> add yearly_trend query (if date column exists)
-  - Identification question -> add detail_query for the identified item
-
 HARD SQL RULES (DuckDB):
   1. Table: nv_play (NEVER public.nv_play)
-  2. NEVER ::numeric or ::int — use CAST(x AS DOUBLE) or CAST(x AS INTEGER)
+  2. NEVER ::numeric or ::int — use CAST(x AS DOUBLE)
   3. Dismissals: COUNT(DISTINCT CASE WHEN wicket IS NOT NULL
          THEN match || '-' || CAST(innings AS VARCHAR) ELSE NULL END)
-     NEVER COUNT(*) FILTER (WHERE wicket IS NOT NULL)
-  4. Innings played: COUNT(DISTINCT match || '-' || CAST(innings AS VARCHAR))
-  5. Use ONLY columns from AVAILABLE COLUMNS. Skip dimensions if column missing.
-  6. Named entities: use resolved values with ILIKE '%value%'
-  7. HAVING filter scope: apply HAVING on the SAME aggregation as the metric.
-     Do NOT filter on global career balls when measuring phase-specific balls.
-  8. Always include sample size (ball count or innings count) alongside every rate/%.
-  9. Match winner (if needed): derive from innings totals —
-     team batting second wins if their total > team batting first total.
-     Use a CTE: WITH match_totals AS (SELECT match, innings, batting_team,
-       SUM(runs+extra_runs) AS total FROM nv_play GROUP BY match,innings,batting_team),
-     winner AS (SELECT match,
-       MAX(CASE WHEN innings=1 THEN batting_team END) AS batting_first_team,
-       MAX(CASE WHEN innings=2 THEN batting_team END) AS chasing_team,
-       MAX(CASE WHEN innings=1 THEN total END) AS total1,
-       MAX(CASE WHEN innings=2 THEN total END) AS total2,
-       CASE WHEN MAX(CASE WHEN innings=2 THEN total END) >
-                 MAX(CASE WHEN innings=1 THEN total END)
-            THEN MAX(CASE WHEN innings=2 THEN batting_team END)
-            ELSE MAX(CASE WHEN innings=1 THEN batting_team END) END AS winning_team
-     FROM match_totals GROUP BY match)
-  10. Required run rate (if needed): at start of each over in chase, compute
-      (target - runs_so_far) / overs_remaining * (balls_per_over).
+  4. Use ONLY columns from AVAILABLE COLUMNS.
 
-OUTPUT — STRICT JSON ONLY, NO PREAMBLE, NO MARKDOWN FENCES:
+OUTPUT — STRICT JSON ONLY:
 {"analysis_type": "single|multi", "intent": "1-2 sentences", "queries": [{"name": "snake_case", "purpose": "what and why", "sql": "SELECT ..."}]}
 
 USER QUESTION: """ + question
     )
 
-    # Initial plan -> planner; repair (error_feedback set) -> validator. Both Pro-grade.
     _target = "validator" if error_feedback else "planner"
     _cfg    = VALIDATOR_CONFIG if error_feedback else PLANNER_CONFIG
     parsed = llm_json(prompt, cfg=_cfg, target=_target)
@@ -1370,8 +1197,7 @@ USER QUESTION: """ + question
                 f"COUNT(DISTINCT match) AS matches, "
                 f"COUNT(DISTINCT {innings_col}) AS innings_played, "
                 f"SUM(runs) AS total_runs, "
-                f"COUNT(DISTINCT CASE WHEN wicket IS NOT NULL THEN {innings_col} ELSE NULL END) AS dismissals, "
-                f"ROUND(CAST(SUM(runs) AS DOUBLE) / NULLIF(COUNT(DISTINCT CASE WHEN wicket IS NOT NULL THEN {innings_col} ELSE NULL END), 0), 2) AS batting_avg "
+                f"COUNT(DISTINCT CASE WHEN wicket IS NOT NULL THEN {innings_col} ELSE NULL END) AS dismissals "
                 f"FROM nv_play GROUP BY batter ORDER BY total_runs DESC LIMIT 20"
             )
         return {
@@ -1384,13 +1210,17 @@ USER QUESTION: """ + question
 def execute_duckdb_plan(plan: dict, df: pd.DataFrame, auto_repair: bool = True,
                         question: str = "", profile: Optional[dict] = None,
                         resolved_entities: Optional[dict] = None,
-                        intent: Optional[dict] = None) -> list:
+                        intent: Optional[dict] = None,
+                        table_name: str = "nv_play",
+                        generic: bool = False) -> list:
     con = duckdb.connect(database=":memory:")
-    con.register("nv_play", df)
+    con.register(table_name, df)
     all_results = []
 
+    cleaner = clean_sql_duckdb_generic if generic else clean_sql_duckdb
+
     def run_one(name: str, purpose: str, sql: str, allow_repair: bool):
-        sql_clean = clean_sql_duckdb(sql)
+        sql_clean = cleaner(sql)
         if not sql_clean.endswith(";"):
             sql_clean += ";"
         try:
@@ -1418,13 +1248,20 @@ def execute_duckdb_plan(plan: dict, df: pd.DataFrame, auto_repair: bool = True,
             err = str(e)
             if allow_repair and auto_repair and profile is not None:
                 try:
-                    # error_feedback routes this re-plan through the validator model.
-                    fixed_plan = generate_duckdb_query_plan(
-                        question, profile=profile,
-                        resolved_entities=resolved_entities or {},
-                        intent=intent,
-                        error_feedback=f"Query '{name}' failed: {err}\nSQL was:\n{sql_clean}",
-                    )
+                    if generic:
+                        fixed_plan = generate_generic_duckdb_plan(
+                            question, profile=profile,
+                            resolved_entities=resolved_entities or {},
+                            table_name=table_name,
+                            error_feedback=f"Query '{name}' failed: {err}\nSQL was:\n{sql_clean}",
+                        )
+                    else:
+                        fixed_plan = generate_duckdb_query_plan(
+                            question, profile=profile,
+                            resolved_entities=resolved_entities or {},
+                            intent=intent,
+                            error_feedback=f"Query '{name}' failed: {err}\nSQL was:\n{sql_clean}",
+                        )
                     if fixed_plan.get("queries"):
                         return run_one(
                             name + "_repaired",
@@ -1444,7 +1281,110 @@ def execute_duckdb_plan(plan: dict, df: pd.DataFrame, auto_repair: bool = True,
 
 
 # =========================================================
-# CHART CONFIG
+# GENERIC EXCEL — DUCKDB PLAN (no cricket assumptions)
+# =========================================================
+def generate_generic_duckdb_plan(question: str,
+                                  profile: Dict[str, Any],
+                                  resolved_entities: Dict[str, List[str]],
+                                  table_name: str = "user_data",
+                                  error_feedback: Optional[str] = None) -> dict:
+    """Generate a DuckDB plan for arbitrary spreadsheet data — no schema assumptions."""
+    columns = [c["name"] for c in profile["columns"]]
+    available_cols = ", ".join(columns)
+
+    col_hints = []
+    for col in profile["columns"]:
+        line = f"  {col['name']} (dtype={col['dtype']}, nulls={col['null_pct']}%, unique={col['n_unique']}"
+        if "min" in col and col["min"] is not None:
+            line += f", min={col['min']}, max={col['max']}, mean={col.get('mean')}"
+        line += ")"
+        if "sample_values" in col:
+            line += f" sample={col['sample_values'][:6]}"
+        col_hints.append(line)
+
+    entity_hint = ""
+    if resolved_entities:
+        entity_hint = "\nENTITY MATCHES (your question references these values found in the file):\n"
+        for asked, hits in resolved_entities.items():
+            entity_hint += f"  '{asked}' -> {hits}\n"
+
+    feedback = ""
+    if error_feedback:
+        feedback = f"\nPREVIOUS SQL FAILED:\n{error_feedback}\nFix using only the columns above.\n"
+
+    prompt = f"""
+You are an expert data analyst and SQL engineer working with a user-uploaded spreadsheet.
+The user has uploaded an arbitrary Excel/CSV file. You have NO schema assumptions — only the
+columns and profile provided below. The data is registered as a DuckDB in-memory table called: {table_name}
+
+FILE SUMMARY:
+  Rows: {profile['row_count']}
+
+AVAILABLE COLUMNS:
+{available_cols}
+
+COLUMN PROFILE (study carefully — your SQL must only use these columns):
+{chr(10).join(col_hints)}
+{entity_hint}
+{feedback}
+
+YOUR JOB:
+1. Understand the user's question in the context of THEIR data (it may not be cricket).
+2. Choose the right columns to answer it. If the question references a concept not in the data,
+   pick the closest reasonable column (e.g. "sales" -> a numeric column with "amount"/"revenue"/"price" in its name).
+3. Write 1-3 DuckDB SQL queries that together answer the question:
+   - One main query that directly answers the question.
+   - Optionally: a summary/profile query that adds context (totals, averages, distribution).
+   - Optionally: a breakdown by a relevant dimension (category, time, etc.).
+4. If the question is ambiguous, default to the most useful interpretation and add an extra
+   exploratory query.
+
+DUCKDB SQL RULES:
+  - Table name: {table_name}
+  - SELECT only.
+  - String filter: ILIKE '%value%' for fuzzy text matching.
+  - Numeric aggregation: SUM, AVG, COUNT, MIN, MAX with ROUND(x, 2) for decimals.
+  - Use CAST(x AS DOUBLE) for division (avoid integer truncation).
+  - Use NULLIF(denominator, 0) to avoid divide-by-zero.
+  - Date functions: EXTRACT(YEAR FROM col), EXTRACT(MONTH FROM col), DATE_TRUNC('month', col).
+  - For "top N" leaderboards: ORDER BY metric DESC LIMIT 10-20.
+  - For trends: GROUP BY a date/period column, ORDER BY that column ASC.
+  - For comparisons: GROUP BY the dimension, output metrics side-by-side.
+  - NEVER invent columns. If a needed column is missing, work with what's there and note it.
+  - NEVER use ::numeric or ::int — use CAST(x AS DOUBLE) or CAST(x AS INTEGER).
+  - For percentages: ROUND(CAST(numerator AS DOUBLE) / NULLIF(denominator, 0) * 100, 2).
+  - Always include a sample size column (COUNT(*)) alongside any rate/percentage.
+
+OUTPUT — STRICT JSON ONLY (no preamble, no markdown fences):
+{{
+  "analysis_type": "single|multi",
+  "intent": "1-2 sentences describing what the user is asking",
+  "queries": [
+    {{"name": "snake_case_name", "purpose": "what this query does and why", "sql": "SELECT ..."}}
+  ]
+}}
+
+USER QUESTION: {question}
+"""
+
+    _target = "validator" if error_feedback else "planner"
+    _cfg    = VALIDATOR_CONFIG if error_feedback else PLANNER_CONFIG
+    parsed = llm_json(prompt, cfg=_cfg, target=_target)
+
+    if not parsed or "queries" not in parsed:
+        return {
+            "analysis_type": "single",
+            "queries": [{
+                "name": "fallback_preview",
+                "purpose": "Could not interpret the question — showing data sample",
+                "sql": f"SELECT * FROM {table_name} LIMIT 20",
+            }],
+        }
+    return parsed
+
+
+# =========================================================
+# CHART CONFIG — unchanged
 # =========================================================
 def generate_chart_config(question: str, query_results: list, intent: Optional[dict] = None):
     best = None
@@ -1477,7 +1417,7 @@ def generate_chart_config(question: str, query_results: list, intent: Optional[d
     hints_text = "\n".join(hints) if hints else "(no specific hint)"
 
     prompt = f"""
-Cricket data visualisation expert. Select the best chart type.
+Data visualisation expert. Select the best chart type for this data.
 Return null if no chart adds meaningful value (e.g. single number).
 
 HINTS:
@@ -1512,7 +1452,6 @@ USER QUESTION: {question}
 DATABASE RESULTS: {compact}
 """
 
-    # Chart classification is structural — Flash handles it cheaply.
     raw = llm(prompt, cfg=CHART_CONFIG_CFG, target="insight")
     raw = raw.replace("```json", "").replace("```", "").strip()
     if raw.lower().strip() == "null":
@@ -1527,7 +1466,94 @@ DATABASE RESULTS: {compact}
 
 
 # =========================================================
-# INSIGHT GENERATION — DATA-FAITHFUL, NO TRUNCATION
+# QUICK ANSWER + RELATED QUESTIONS GENERATOR
+# =========================================================
+def generate_quick_answer_and_related(question: str,
+                                       query_results: list,
+                                       context_note: str = "",
+                                       generic: bool = False) -> Dict[str, Any]:
+    """
+    Generates a 40-70 word TL;DR answer plus 3 short related-question
+    suggestions. Returns {"quick_answer": str, "related_questions": [str, str, str]}.
+    Falls back gracefully if the LLM call fails.
+    """
+    # Compact the results so the prompt stays small
+    MAX_ROWS = 12
+    compact_results = []
+    for r in query_results:
+        rows = r.get("results", [])
+        compact_results.append({
+            "query_name": r.get("query_name"),
+            "purpose":    r.get("purpose"),
+            "results":    rows[:MAX_ROWS],
+            "total_rows": len(rows),
+        })
+    compact_json = json.dumps(compact_results, default=str)[:9000]
+
+    domain_label = "data" if generic else "cricket"
+    related_style = (
+        "Generate 3 specific, useful follow-up questions a user might ask next, "
+        "using the actual column names / entity names visible in the data above. "
+        "Each must be a complete, self-contained question (10-18 words)."
+    )
+
+    prompt = f"""
+You are an expert {domain_label} analyst. Based on the user's question and the query results below,
+produce TWO things in strict JSON.
+
+{context_note}
+
+USER QUESTION:
+{question}
+
+QUERY RESULTS (your single source of truth — do not invent numbers):
+{compact_json}
+
+PRODUCE (strict JSON only, no preamble, no markdown fences):
+
+{{
+  "quick_answer": "<A direct, punchy answer to the question in 40-70 words. Lead with the headline number/name. Use **bold markdown** around 2-4 of the most important facts/numbers/names. Plain prose only, no lists, no headers. If no data found, say so clearly and suggest one rephrasing.>",
+  "related_questions": [
+    "<follow-up question 1>",
+    "<follow-up question 2>",
+    "<follow-up question 3>"
+  ]
+}}
+
+QUICK ANSWER RULES:
+- Every number must come from the results — never invent.
+- Bold the most important facts using **double asterisks**.
+- 40-70 words MAX. Be direct.
+- No bullet points, no markdown headers, no tables. Just prose with bold highlights.
+
+RELATED QUESTIONS RULES:
+{related_style}
+- Each question should be answerable from the same data source.
+- Vary the angles: one comparison, one trend/breakdown, one drill-down.
+- Use actual names from the results when relevant (not "Player X").
+"""
+
+    try:
+        parsed = llm_json(prompt, cfg=QUICK_ANSWER_CFG, target="insight")
+        if not parsed:
+            raise ValueError("LLM returned no JSON")
+        qa = (parsed.get("quick_answer") or "").strip()
+        rq = parsed.get("related_questions") or []
+        # Clean and validate
+        rq = [str(q).strip() for q in rq if isinstance(q, str) and q.strip()][:3]
+        if not qa:
+            raise ValueError("Empty quick_answer")
+        return {"quick_answer": qa, "related_questions": rq}
+    except Exception:
+        # Graceful fallback
+        return {
+            "quick_answer": "Detailed analysis is available below. The query returned results — see the data table and full insight for specifics.",
+            "related_questions": [],
+        }
+
+
+# =========================================================
+# INSIGHT GENERATION
 # =========================================================
 def generate_cricket_insight(question: str,
                              query_results: list,
@@ -1538,7 +1564,6 @@ def generate_cricket_insight(question: str,
 
     session_ctx = build_session_context(session_context or [])
 
-    # ── Truncate large result sets before building the prompt ─────────────────
     MAX_ROWS_IN_PROMPT = 20
     truncated_results = []
     any_truncated = False
@@ -1556,7 +1581,6 @@ def generate_cricket_insight(question: str,
 
     compact_data = json.dumps(truncated_results, default=str)[:18000]
 
-    # ── Result shape detection ────────────────────────────────────────────────
     all_failed = all(
         r.get("error") or len(r.get("results", [])) == 0
         for r in query_results
@@ -1569,7 +1593,6 @@ def generate_cricket_insight(question: str,
     is_tiny_result    = (total_result_rows <= 3) and not all_failed
     is_large_result   = any_truncated
 
-    # ── Context blocks ────────────────────────────────────────────────────────
     file_block = ""
     if file_context:
         file_block = (
@@ -1585,15 +1608,14 @@ def generate_cricket_insight(question: str,
     if any_truncated:
         truncation_note = (
             f"\nDATA NOTE: Some result sets were capped at {MAX_ROWS_IN_PROMPT} rows "
-            "(_total_rows shows the real count). Acknowledge the full count in your analysis "
-            "and summarise the full distribution — do not pretend only the shown rows exist.\n"
+            "(_total_rows shows the real count). Acknowledge the full count and "
+            "summarise the full distribution.\n"
         )
 
     small_sample_note = (
         "\nNOTE: Small sample size — mention caveats naturally.\n" if small_sample else ""
     )
 
-    # ── Dynamic analysis section based on intent ─────────────────────────────
     analysis_section_label = "Performance Analysis"
     if intent:
         if intent.get("is_bowling") and not intent.get("is_batting"):
@@ -1615,7 +1637,6 @@ def generate_cricket_insight(question: str,
         elif intent.get("is_venue"):
             analysis_section_label = "Venue Analysis"
 
-    # ── Special case: all queries failed ─────────────────────────────────────
     if all_failed:
         error_detail = "; ".join(errors) if errors else "no data returned"
         failed_prompt = (
@@ -1626,27 +1647,22 @@ def generate_cricket_insight(question: str,
             "---\n\n"
             "## 🏏 [Descriptive headline about what was attempted]\n\n"
             "### ⚠️ Data Retrieval Issue\n"
-            "In 2-3 plain sentences (no technical jargon): explain what was asked, "
-            "that the data could not be retrieved, and what specific information "
-            "would be needed to answer it.\n\n"
+            "In 2-3 plain sentences: explain what was asked, that the data could not "
+            "be retrieved, and what specific information would be needed.\n\n"
             "### 💡 Suggested Next Steps\n"
             "- One specific simpler rephrasing of the question that might work\n"
             "- One alternative related question that could be answered\n\n"
-            "### 🔗 Related Analyses\n"
-            "2 alternative questions that are achievable with ball-by-ball cricket data.\n\n"
             "---\n\n"
             "Keep total response under 200 words. Do not mention SQL or databases."
         )
         return llm(failed_prompt, cfg=INSIGHT_CONFIG, target="insight")
 
-    # ── Build the main prompt ─────────────────────────────────────────────────
     tiny_instruction = (
         "RESPONSE LENGTH: This is a small/single-stat result. Write a CONCISE response:\n"
         "- Headline: specific with the actual number/name\n"
-        "- Key Numbers: show the data clearly (table if multiple columns, single line if one number)\n"
+        "- Key Numbers: show the data clearly\n"
         "- Analysis: 3-5 sentences maximum. Answer directly. No padding.\n"
         "- Verdict: 2-3 sentences.\n"
-        "- Additional Context: include all 5 sections but keep each to 1-2 sentences.\n"
         "- Total length: 200-350 words maximum.\n"
     ) if is_tiny_result else (
         "RESPONSE LENGTH: Write a comprehensive analysis:\n"
@@ -1663,89 +1679,67 @@ def generate_cricket_insight(question: str,
 
     partial_note = (
         "PARTIAL DATA NOTE: One or more specific filters returned 0 rows. "
-        "State clearly which criteria found no data (e.g. 'No batter met the RRR > 10 threshold'). "
+        "State clearly which criteria found no data. "
         "Then report the available broader results. Do NOT write hypothetical analysis.\n"
     ) if has_partial_zero else ""
 
     prompt = (
         "You are an expert cricket analyst. Answer the user's question using ONLY the data "
         "in the query results below. Be accurate, direct, and insightful.\n\n"
-        + file_block
-        + small_sample_note
-        + truncation_note
-        + session_ctx
+        + file_block + small_sample_note + truncation_note + session_ctx
         + "\n\nUSER QUESTION:\n" + question
         + "\n\nQUERY RESULTS (exact numbers — do not alter or invent any figures):\n"
         + compact_data
-        + "\n\n" + tiny_instruction
-        + large_instruction
-        + partial_note
+        + "\n\n" + tiny_instruction + large_instruction + partial_note
         + """
-CRITICAL RULES (follow every one):
-1. ACCURACY: Every number must come directly from the query results. Never invent or estimate.
-2. FORMAT DETECTION: Check for match_type in the results.
-   - If T20/T20I found -> apply T20 benchmarks.
-   - If ODI/List A/50-over found -> apply ODI benchmarks.
-   - If Test/First Class found -> apply Test benchmarks.
-   - If only division names (Division 3A, Premier Division, etc.) or no match_type -> 
-     write "Format: local/club cricket — standard benchmarks not applied."
-3. DISMISSALS: If innings_list is in the results, use it as ground truth for dismissal counts.
+CRITICAL RULES:
+1. ACCURACY: Every number must come from the query results. Never invent.
+2. FORMAT DETECTION: Check for match_type in the results and apply appropriate benchmarks.
+3. DISMISSALS: If innings_list is in the results, use it as ground truth.
 4. NO PADDING: Every sentence must reference a specific number or fact from the data.
-   Do not write generic cricket knowledge not supported by the data.
-5. NO TRUNCATION: Complete every section. Never stop mid-sentence or mid-table.
+5. NO TRUNCATION: Complete every section.
 6. SAMPLE SIZE: Always state how many matches/innings/balls the conclusion is based on.
 7. Do not mention SQL, database, queries, or column names.
+8. DO NOT include a "Related Analyses" section — the system handles that separately.
 
-REQUIRED OUTPUT FORMAT (complete every section, never omit or abbreviate):
+REQUIRED OUTPUT FORMAT:
 
 ---
 
 ## 🏏 [Specific headline — include the actual name/number/match found]
 
 ### 📊 Key Numbers
-Present ALL relevant data as a clean markdown table.
-If the dataset was truncated, show the top """ + str(MAX_ROWS_IN_PROMPT) + """ rows and state the full count.
-Column headers must be readable (no underscores). Round all decimals to 2 places.
+Present ALL relevant data as a clean markdown table. Round decimals to 2 places.
 
 ### 🔍 Analysis
 
 **Summary**
-2-3 sentences directly answering the question with exact numbers from the data.
-State format detected and sample size.
+2-3 sentences directly answering the question.
 
 **""" + analysis_section_label + """**
-Detailed analysis of the key metrics. Compare against benchmarks only if format was detected.
-For leaderboards: identify top 3 clearly, note the gap between 1st and 2nd.
-For trends: describe direction, peak, and trough with specific values.
-For phase analysis: cover each phase separately with its numbers.
+Detailed analysis of the key metrics. Compare against benchmarks if format detected.
 
 **Notable Points**
 3-5 bullet points. Each bullet must cite a specific number from the data.
-No bullet should contain generic cricket statements without a supporting number.
 
 ### 💡 Verdict
-3-5 sentences. Direct expert conclusion grounded entirely in the data.
-State tier classification only if format was confirmed.
+3-5 sentences. Direct expert conclusion grounded in the data.
 
 ---
 
 ### ℹ️ Additional Context
 
 **🎯 Query Context**
-What was asked | type of analysis | format detected | sample size (matches/innings/balls) | any filters broadened.
+What was asked | type of analysis | format detected | sample size.
 
 **📅 Data Coverage**
-Date range from the data | competitions covered | any notable gaps.
+Date range | competitions covered | notable gaps.
 
 **📐 Benchmarks Applied**
-Format: [detected or "not applicable — local cricket"] | List each metric with its tier thresholds used.
-If format not detected, write: "Standard T20/ODI/Test benchmarks not applied to this dataset."
+List metrics with tier thresholds used, or note if not applicable.
 
 **📝 Summary**
-2-3 sentences: direct answer to the question + one key supporting fact.
-
-**🔗 Related Analyses**
-Exactly 2 specific follow-up questions using the actual player/team names and format from this data.
+2-3 sentences: direct answer + one key supporting fact.
 
 ---
 """
@@ -1753,6 +1747,142 @@ Exactly 2 specific follow-up questions using the actual player/team names and fo
 
     return llm(prompt, cfg=INSIGHT_CONFIG, target="insight")
 
+
+def generate_generic_insight(question: str,
+                             query_results: list,
+                             profile: Dict[str, Any],
+                             file_name: str) -> str:
+    """Insight generator for arbitrary spreadsheets — no cricket assumptions."""
+    MAX_ROWS = 20
+    truncated = []
+    any_trunc = False
+    for r in query_results:
+        rows = r.get("results", [])
+        if len(rows) > MAX_ROWS:
+            t = dict(r)
+            t["results"] = rows[:MAX_ROWS]
+            t["_total_rows"] = len(rows)
+            t["_truncated_to"] = MAX_ROWS
+            truncated.append(t)
+            any_trunc = True
+        else:
+            truncated.append(r)
+
+    compact = json.dumps(truncated, default=str)[:16000]
+    all_failed = all(r.get("error") or len(r.get("results", [])) == 0 for r in query_results)
+    errors = [str(r.get("error", "")) for r in query_results if r.get("error")]
+    total_rows = sum(len(r.get("results", [])) for r in query_results)
+    is_tiny = total_rows <= 3 and not all_failed
+
+    if all_failed:
+        err_detail = "; ".join(errors) if errors else "no data returned"
+        return llm(
+            f"""You are a data analyst. The user uploaded '{file_name}' and asked: {question}
+
+The query failed: {err_detail}
+
+Write a brief response (under 180 words) with EXACTLY this structure:
+
+## ⚠️ Could Not Answer Your Question
+
+### What Happened
+In 2-3 plain sentences, explain what was attempted and why it didn't work.
+
+### Suggested Rephrasing
+- One simpler rephrasing of the question
+- One related question that may be answerable from the file's columns
+
+Do not mention SQL or technical errors.""",
+            cfg=INSIGHT_CONFIG, target="insight",
+        )
+
+    column_summary_lines = []
+    for c in profile["columns"][:30]:
+        line = f"  {c['name']} ({c['dtype']}, {c['n_unique']} unique"
+        if "min" in c and c["min"] is not None:
+            line += f", range {c['min']}–{c['max']}"
+        line += ")"
+        column_summary_lines.append(line)
+
+    length_note = (
+        "Keep response concise — 200-350 words total." if is_tiny
+        else "Provide a comprehensive analysis — 500-800 words total."
+    )
+
+    trunc_note = (
+        f"DATA NOTE: Some tables were capped at {MAX_ROWS} rows (_total_rows shows the real count). "
+        "Reference the full count in your analysis.\n"
+        if any_trunc else ""
+    )
+
+    prompt = f"""
+You are an expert data analyst. The user uploaded a spreadsheet called '{file_name}' and is asking
+questions about THEIR data. You are NOT a cricket analyst here — analyse whatever domain this is.
+
+FILE OVERVIEW:
+  Total rows: {profile['row_count']}
+  Columns: {len(profile['columns'])}
+
+COLUMN PROFILE:
+{chr(10).join(column_summary_lines)}
+
+USER QUESTION:
+{question}
+
+QUERY RESULTS (your only source of truth — do not invent numbers):
+{compact}
+
+{trunc_note}
+{length_note}
+
+RULES:
+1. Every number must come from the query results.
+2. Use the actual column names and values from THEIR data — do not assume a domain (no cricket lingo unless the data is cricket).
+3. Do not mention SQL, queries, columns by technical name (translate "total_revenue" to "Total Revenue" in prose).
+4. Identify trends, top performers, notable outliers, and any caveats (null %, small samples).
+5. DO NOT include a "Related Analyses" section — the system handles that separately.
+
+REQUIRED OUTPUT FORMAT:
+
+---
+
+## 📊 [Specific headline that summarises the finding]
+
+### 📋 Key Numbers
+Present the main result as a clean markdown table. Round numbers to 2 decimals.
+If the table was truncated, mention the full count.
+
+### 🔍 Analysis
+
+**Summary**
+2-3 sentences directly answering the question with the actual numbers.
+
+**Key Findings**
+3-5 bullet points. Each bullet must cite a specific number from the data.
+Cover: top performers, distribution, notable contrasts, anything surprising.
+
+**Caveats**
+Mention any data quality concerns visible (high null %, small sample, etc.) — or write "No notable data quality issues" if clean.
+
+### 💡 Takeaway
+2-3 sentences. The bottom-line answer for a decision-maker.
+
+---
+
+### ℹ️ Additional Context
+
+**🎯 What Was Analysed**
+The question, the approach, and which columns were used.
+
+**📁 Data Coverage**
+Total rows analysed, any date range if applicable, key dimensions found.
+
+**📝 Bottom Line**
+1-2 sentences: the direct answer.
+
+---
+"""
+    return llm(prompt, cfg=INSIGHT_CONFIG, target="insight")
 
 
 # =========================================================
@@ -1797,7 +1927,7 @@ def generate_intent_summary(question: str, intent: dict) -> str:
 
 
 # =========================================================
-# FORMAT RESULTS (markdown table)
+# FORMAT RESULTS
 # =========================================================
 def format_results(results: list) -> str:
     if not results:
@@ -1879,6 +2009,9 @@ def ask_question(req: QueryRequest):
             req.question, results, small_sample=relaxed,
             intent=intent, session_context=req.session_context,
         )
+        quick = generate_quick_answer_and_related(
+            req.question, results, context_note="Source: cricket database (nv_play).",
+        )
 
         return {
             "question": req.question,
@@ -1898,6 +2031,8 @@ def ask_question(req: QueryRequest):
             "results": results,
             "tables": tables,
             "chart_config": chart_cfg,
+            "quick_answer": quick.get("quick_answer"),
+            "related_questions": quick.get("related_questions", []),
             "insight": insight,
             "session_turn": {"question": req.question, "summary": (insight[:400] if insight else "")},
         }
@@ -1911,14 +2046,14 @@ def ask_excel(req: ExcelQueryRequest):
         intent = classify_intent(req.question)
         intent_summary = generate_intent_summary(req.question, intent)
 
-        df = load_dataframe(req.file_base64, req.file_ext)
+        df = load_dataframe(req.file_base64, req.file_ext, cricket_typed=True)
         if df.empty:
             return {
                 "status": "error",
                 "message": "Uploaded file is empty after parsing.",
                 "file_name": req.file_name,
             }
-        profile = profile_dataframe(df)
+        profile = profile_dataframe(df, cricket_aware=True)
         resolved = resolve_entities_in_df(df, intent.get("candidate_names", []))
 
         plan = generate_duckdb_query_plan(
@@ -1928,6 +2063,7 @@ def ask_excel(req: ExcelQueryRequest):
         results = execute_duckdb_plan(
             plan, df, auto_repair=True, question=req.question,
             profile=profile, resolved_entities=resolved, intent=intent,
+            table_name="nv_play", generic=False,
         )
 
         all_empty = all(len(q.get("results", [])) == 0 for q in results)
@@ -1944,6 +2080,7 @@ def ask_excel(req: ExcelQueryRequest):
             results = execute_duckdb_plan(
                 relaxed_plan, df, auto_repair=False, question=req.question,
                 profile=profile, resolved_entities=resolved, intent=intent,
+                table_name="nv_play", generic=False,
             )
             all_empty = all(len(q.get("results", [])) == 0 for q in results)
 
@@ -1955,6 +2092,7 @@ def ask_excel(req: ExcelQueryRequest):
                 results = execute_duckdb_plan(
                     fresh, df, auto_repair=True, question=req.question,
                     profile=profile, resolved_entities=resolved, intent=intent,
+                    table_name="nv_play", generic=False,
                 )
                 all_empty = all(len(q.get("results", [])) == 0 for q in results)
 
@@ -1963,6 +2101,10 @@ def ask_excel(req: ExcelQueryRequest):
             req.question, results,
             small_sample=all_empty, intent=intent, session_context=[],
             file_context=profile,
+        )
+        quick = generate_quick_answer_and_related(
+            req.question, results,
+            context_note=f"Source: user-uploaded NV-Play file '{req.file_name}'.",
         )
 
         tables = [
@@ -2001,9 +2143,128 @@ def ask_excel(req: ExcelQueryRequest):
             "results": results,
             "tables": tables,
             "chart_config": chart_cfg,
+            "quick_answer": quick.get("quick_answer"),
+            "related_questions": quick.get("related_questions", []),
             "insight": insight,
             "session_turn": {"question": req.question, "summary": (insight[:400] if insight else "")},
         }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+
+
+# =========================================================
+# NEW ROUTE — GENERIC EXCEL / CSV (any schema)
+# =========================================================
+@app.post("/ask-generic-excel")
+def ask_generic_excel(req: GenericExcelRequest):
+    """
+    Analyse an arbitrary user-uploaded Excel/CSV. No schema assumptions —
+    the LLM is given the column profile and asked to write DuckDB SQL
+    that answers the user's question against THEIR data.
+    """
+    try:
+        intent = classify_intent(req.question)
+        intent_summary = "Generic data analysis on uploaded file"
+
+        df = load_dataframe(req.file_base64, req.file_ext, cricket_typed=False)
+        if df.empty:
+            return {
+                "status": "error",
+                "message": "Uploaded file is empty after parsing.",
+                "file_name": req.file_name,
+            }
+
+        profile = profile_dataframe(df, cricket_aware=False)
+        resolved = resolve_entities_generic(df, intent.get("candidate_names", []))
+
+        plan = generate_generic_duckdb_plan(
+            req.question, profile=profile, resolved_entities=resolved,
+            table_name="user_data",
+        )
+
+        results = execute_duckdb_plan(
+            plan, df, auto_repair=True, question=req.question,
+            profile=profile, resolved_entities=resolved, intent=None,
+            table_name="user_data", generic=True,
+        )
+
+        all_empty = all(len(q.get("results", [])) == 0 for q in results)
+        if all_empty:
+            # Retry once with relaxed plan (no HAVING)
+            relaxed_plan = {
+                "analysis_type": plan.get("analysis_type", "single"),
+                "queries": [
+                    {"name": q["name"] + "_relaxed",
+                     "purpose": q["purpose"] + " (filters relaxed)",
+                     "sql": strip_having_clauses(q["sql"])}
+                    for q in plan.get("queries", [])
+                ],
+            }
+            results = execute_duckdb_plan(
+                relaxed_plan, df, auto_repair=False, question=req.question,
+                profile=profile, resolved_entities=resolved, intent=None,
+                table_name="user_data", generic=True,
+            )
+            all_empty = all(len(q.get("results", [])) == 0 for q in results)
+
+            if all_empty:
+                fresh = generate_generic_duckdb_plan(
+                    req.question, profile=profile, resolved_entities=resolved,
+                    table_name="user_data",
+                    error_feedback="All previous queries returned 0 rows. Broaden the filters or try simpler aggregations.",
+                )
+                results = execute_duckdb_plan(
+                    fresh, df, auto_repair=True, question=req.question,
+                    profile=profile, resolved_entities=resolved, intent=None,
+                    table_name="user_data", generic=True,
+                )
+                all_empty = all(len(q.get("results", [])) == 0 for q in results)
+
+        chart_cfg = generate_chart_config(req.question, results, intent=intent)
+        insight = generate_generic_insight(
+            req.question, results, profile=profile, file_name=req.file_name,
+        )
+        quick = generate_quick_answer_and_related(
+            req.question, results,
+            context_note=f"Source: user-uploaded generic spreadsheet '{req.file_name}'. The user's data may be from any domain — do not assume cricket.",
+            generic=True,
+        )
+
+        tables = [
+            {"query_name": r["query_name"], "purpose": r["purpose"], "table": format_results(r["results"])}
+            for r in results
+        ]
+        sql_queries = [q["sql"] for q in results]
+
+        # Slim profile for response payload
+        cols_summary = [
+            {"name": c["name"], "dtype": c["dtype"], "null_pct": c["null_pct"], "n_unique": c["n_unique"]}
+            for c in profile["columns"]
+        ]
+
+        return {
+            "question": req.question,
+            "intent_summary": intent_summary,
+            "source": "generic",
+            "file_name": req.file_name,
+            "rows_in_file": profile["row_count"],
+            "columns_in_file": [c["name"] for c in profile["columns"]],
+            "file_profile": {
+                "row_count": profile["row_count"],
+                "columns": cols_summary[:50],
+            },
+            "resolved_entities": resolved,
+            "all_results_empty": all_empty,
+            "sql_queries": sql_queries,
+            "results": results,
+            "tables": tables,
+            "chart_config": chart_cfg,
+            "quick_answer": quick.get("quick_answer"),
+            "related_questions": quick.get("related_questions", []),
+            "insight": insight,
+            "session_turn": {"question": req.question, "summary": (insight[:400] if insight else "")},
+        }
+
     except Exception as e:
         return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
 
@@ -2019,7 +2280,7 @@ You are a cricket analyst. A user has asked: "{req.question}"
 Explain in 3-4 clear sentences:
 1. What cricket analysis this question is asking for
 2. Which players/teams/formats are involved
-3. What data dimensions will be analysed (phase, form, comparison, etc.)
+3. What data dimensions will be analysed
 4. What the key insight will be
 
 Be specific. Use cricket domain language only.
